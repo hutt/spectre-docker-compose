@@ -12,7 +12,7 @@ Dieses Repository enthält eine Docker-Compose-Vorlage für eine datenschutzfreu
 - Konfiguration über `.env`
 
 > [!WARNING]
-> ⚠️ Datenschutzfreundliche YouTube-Embeds funktionieren nur in Kombination mit meinem Theme [Spectre](https://github.com/hutt/spectre/blob/main/README.de.md#datenschutzfreundliche-youtube-video-einbettungen).
+> Datenschutzfreundliche YouTube-Embeds funktionieren nur in Kombination mit meinem Theme [Spectre](https://github.com/hutt/spectre/blob/main/README.de.md#datenschutzfreundliche-youtube-video-einbettungen).
 
 ## Voraussetzungen
 
