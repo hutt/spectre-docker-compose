@@ -1,0 +1,25 @@
+{
+  "url": "http://localhost:2368",
+  "server": {
+    "port": 2368,
+    "host": "::"
+  },
+  "logging": {
+    "transports": ["file", "stdout"]
+  },
+  "process": "systemd",
+  "paths": {
+    "contentPath": "/var/lib/ghost/content"
+  },
+  "portal": {
+    "url": "/proxy/npm/@tryghost/portal@~{version}/umd/portal.min.js"
+  },
+  "sodoSearch": {
+    "url": "/proxy/npm/@tryghost/sodo-search@~{version}/umd/sodo-search.min.js",
+    "styles": "/proxy/npm/@tryghost/sodo-search@~{version}/umd/main.css"
+  },
+  "comments": {
+    "url": "/proxy/npm/@tryghost/comments-ui@~{version}/umd/comments-ui.min.js",
+    "styles": "/proxy/npm/@tryghost/comments-ui@~{version}/umd/main.css"
+  }
+}

@@ -1,0 +1,146 @@
+services:
+  ghost:
+    container_name: meine-website-ghost
+    image: ghost:latest
+    depends_on:
+      - redis
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      url: https://${DOMAIN}
+      server__host: "::"
+      server__port: "2368"
+      # Datenbank
+      database__client: sqlite3
+      database__connection__filename: /var/lib/ghost/content/data/ghost.db
+      # Mail
+      mail__transport: ${GHOST_MAIL_TRANSPORT}
+      mail__from: ${GHOST_MAIL_FROM}
+      mail__options__service: ${GHOST_MAIL_SERVICE}
+      mail__options__host: ${GHOST_MAIL_HOST}
+      mail__options__port: ${GHOST_MAIL_PORT}
+      mail__options__auth__user: ${GHOST_MAIL_USER}
+      mail__options__auth__pass: ${GHOST_MAIL_PASS}
+      # HTTP-Caching (Ghost-intern)
+      caching__frontend__maxAge: ${GHOST_CACHE_FRONTEND_MAXAGE}
+      caching__contentAPI__maxAge: ${GHOST_CACHE_CONTENTAPI_MAXAGE}
+      caching__robotstxt__maxAge: ${GHOST_CACHE_ROBOTSTXT_MAXAGE}
+      caching__sitemap__maxAge: ${GHOST_CACHE_SITEMAP_MAXAGE}
+      caching__sitemapXSL__maxAge: ${GHOST_CACHE_SITEMAPXSL_MAXAGE}
+      caching__wellKnown__maxAge: ${GHOST_CACHE_WELLKNOWN_MAXAGE}
+      caching__cors__maxAge: ${GHOST_CACHE_CORS_MAXAGE}
+      caching__publicAssets__maxAge: ${GHOST_CACHE_PUBLICASSETS_MAXAGE}
+      caching__301__maxAge: ${GHOST_CACHE_301_MAXAGE}
+      caching__customRedirects__maxAge: ${GHOST_CACHE_CUSTOMREDIRECTS_MAXAGE}
+      # Redis-Cache
+      cache__type: ${GHOST_CACHE_TYPE}
+      cache__redis__host: ${GHOST_CACHE_REDIS_HOST}
+      cache__redis__port: ${GHOST_CACHE_REDIS_PORT}
+      cache__redis__db: ${GHOST_CACHE_REDIS_DB}
+      cache__redis__keyPrefix: ${GHOST_CACHE_REDIS_KEYPREFIX}
+      cache__redis__ttl: ${GHOST_CACHE_REDIS_TTL}
+      cache__redis__reuseConnection: ${GHOST_CACHE_REDIS_REUSECONNECTION}
+      cache__redis__refreshAheadFactor: ${GHOST_CACHE_REDIS_REFRESHAHEADFACTOR}
+      cache__redis__getTimeoutMilliseconds: ${GHOST_CACHE_REDIS_GETTIMEOUTMS}
+      cache__redis__storeConfig__retryConnectSeconds: ${GHOST_CACHE_REDIS_RETRYCONNECTSECONDS}
+      cache__redis__storeConfig__lazyConnect: ${GHOST_CACHE_REDIS_LAZYCONNECT}
+      cache__redis__storeConfig__enableOfflineQueue: ${GHOST_CACHE_REDIS_ENABLEOFFLINEQUEUE}
+      cache__redis__storeConfig__maxRetriesPerRequest: ${GHOST_CACHE_REDIS_MAXRETRIES}
+      # HostSettings
+      hostSettings__postsPublicCache__enabled: "true"
+      hostSettings__linkRedirectsPublicCache__enabled: "true"
+    volumes:
+      - /opt/containers/meine-website/content:/var/lib/ghost/content
+      - /opt/containers/meine-website/config.production.json:/var/lib/ghost/config.production.json:ro
+    networks:
+      - default
+      - proxy
+    healthcheck:
+      test: "node -e 'require(\"http\").get({host: \"localhost\", port: 2368, path: \"/ghost/api/admin/site/\", headers: {\"X-Forwarded-Proto\": \"https\"}}, res => process.exit(res.statusCode === 200 ? 0 : 1)).on(\"error\", () => process.exit(1));'"
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    labels:
+      - "traefik.enable=true"
+      # HTTP=>HTTPS
+      - "traefik.http.routers.meine-website-ghost-insecure.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`) && !PathPrefix(`/.ghost/activitypub/`) && !Path(`/.well-known/webfinger`) && !Path(`/.well-known/nodeinfo`)"
+      - "traefik.http.routers.meine-website-ghost-insecure.entrypoints=http"
+      - "traefik.http.routers.meine-website-ghost-insecure.service=meine-website-ghost"
+      - "traefik.http.middlewares.meine-website-redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.meine-website-redirect-to-https.redirectscheme.permanent=true"
+      - "traefik.http.routers.meine-website-ghost-insecure.middlewares=meine-website-redirect-to-https"
+      # HTTPS Ghost
+      - "traefik.http.routers.meine-website-ghost.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`) && !PathPrefix(`/.ghost/activitypub/`) && !Path(`/.well-known/webfinger`) && !Path(`/.well-known/nodeinfo`)"
+      - "traefik.http.routers.meine-website-ghost.entrypoints=https"
+      - "traefik.http.routers.meine-website-ghost.service=meine-website-ghost"
+      - "traefik.http.services.meine-website-ghost.loadbalancer.server.port=2368"
+      - "traefik.http.services.meine-website-ghost.loadbalancer.passhostheader=true"
+      - "traefik.http.routers.meine-website-ghost.tls=true"
+      - "traefik.http.routers.meine-website-ghost.tls.certresolver=http"
+      - "traefik.http.routers.meine-website-ghost.middlewares=compresstraefik"
+      - "traefik.http.middlewares.compresstraefik.compress=true"
+      # ActivityPub HTTPS
+      - "traefik.http.routers.meine-website-ghost-activitypub.entrypoints=https"
+      - "traefik.http.routers.meine-website-ghost-activitypub.rule=Host(`${DOMAIN}`) && (PathPrefix(`/.ghost/activitypub/`) || Path(`/.well-known/webfinger`) || Path(`/.well-known/nodeinfo`))"
+      - "traefik.http.routers.meine-website-ghost-activitypub.service=meine-website-ghost-activitypub"
+      - "traefik.http.services.meine-website-ghost-activitypub.loadbalancer.server.url=https://ap.ghost.org"
+      - "traefik.http.services.meine-website-ghost-activitypub.loadbalancer.passhostheader=true"
+      - "traefik.http.routers.meine-website-ghost-activitypub.tls=true"
+      - "traefik.http.routers.meine-website-ghost-activitypub.tls.certresolver=http"
+      - "traefik.docker.network=proxy"
+
+  redis:
+    container_name: meine-website-redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - ./redis:/data
+    networks:
+      - default
+    command: >
+      redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save "" --tcp-backlog 128 --timeout 300 --tcp-keepalive 60 --databases 1 --hz 10 --loglevel warning --client-output-buffer-limit "normal 0 0 0" --stop-writes-on-bgsave-error no
+    healthcheck:
+      test: ["CMD","redis-cli","ping"]
+      interval: 5s
+      timeout: 1s
+      retries: 3
+
+  proxy:
+    container_name: meine-website-proxy
+    image: nginx:alpine
+    depends_on:
+      - ghost
+    restart: unless-stopped
+    volumes:
+      - ./nginx-proxy.conf:/etc/nginx/nginx.conf:ro
+      - ./proxy-cache:/var/cache/nginx
+    networks:
+      - default
+      - proxy
+    healthcheck:
+          test: curl --fail http://localhost/proxy/npm/@tryghost/sodo-search@latest/umd/sodo-search.min.js || exit 1
+          interval: 60s
+          retries: 5
+          start_period: 20s
+          timeout: 10s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.meine-website-proxy.rule=Host(`${DOMAIN}`) && PathPrefix(`/proxy/`)"
+      - "traefik.http.routers.meine-website-proxy.entrypoints=https"
+      - "traefik.http.routers.meine-website-proxy.tls=true"
+      - "traefik.http.routers.meine-website-proxy.tls.certresolver=http"
+      - "traefik.http.services.meine-website-proxy.loadbalancer.server.port=80"
+      - "traefik.http.services.meine-website-proxy.loadbalancer.passhostheader=true"
+      - "traefik.docker.network=proxy"
+
+volumes:
+  ghost-data:
+  traefik-certificates:
+
+networks:
+  default:
+    driver: bridge
+  proxy:
+    external: true
