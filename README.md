@@ -44,13 +44,18 @@ meine-website.de/
 2. `.env` kopieren und anpassen  
    ```
    cp example.env .env
-   # DOMAIN, GHOST_URL, SMTP, CACHE-Settings etc. setzen
+   nano .env # Settings setzen
    ```
-3. Docker-Container starten  
+3. `docker-compose.yml` anpassen  
+   Container- und Label-Bezeichnungen müssen ggfs. angepasst werden.
+   ```
+   docker-compose.yml
+   ```
+4. Docker-Container starten  
    ```
    docker compose up -d
    ```
-4. Logs prüfen  
+5. Logs prüfen  
    ```
    docker compose logs -f
    ```
