@@ -12,7 +12,7 @@ services:
       url: https://${DOMAIN}
       server__host: "::"
       server__port: "2368"
-      # Datenbank
+      # Database
       database__client: sqlite3
       database__connection__filename: /var/lib/ghost/content/data/ghost.db
       # Mail
@@ -23,7 +23,7 @@ services:
       mail__options__port: ${GHOST_MAIL_PORT}
       mail__options__auth__user: ${GHOST_MAIL_USER}
       mail__options__auth__pass: ${GHOST_MAIL_PASS}
-      # HTTP-Caching (Ghost-intern)
+      # HTTP-Caching (Ghost-internal)
       caching__frontend__maxAge: ${GHOST_CACHE_FRONTEND_MAXAGE}
       caching__contentAPI__maxAge: ${GHOST_CACHE_CONTENTAPI_MAXAGE}
       caching__robotstxt__maxAge: ${GHOST_CACHE_ROBOTSTXT_MAXAGE}
@@ -48,7 +48,7 @@ services:
       cache__redis__storeConfig__lazyConnect: ${GHOST_CACHE_REDIS_LAZYCONNECT}
       cache__redis__storeConfig__enableOfflineQueue: ${GHOST_CACHE_REDIS_ENABLEOFFLINEQUEUE}
       cache__redis__storeConfig__maxRetriesPerRequest: ${GHOST_CACHE_REDIS_MAXRETRIES}
-      # HostSettings
+      # Host Settings
       hostSettings__postsPublicCache__enabled: "true"
       hostSettings__linkRedirectsPublicCache__enabled: "true"
     volumes:
@@ -62,49 +62,52 @@ services:
       interval: 10s
       timeout: 10s
       retries: 10
+      start_period: 30s
     labels:
       - "traefik.enable=true"
-      # HTTP=>HTTPS
-      - "traefik.http.routers.spectre-ghost-insecure.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`) && !PathPrefix(`/.ghost/activitypub/`) && !Path(`/.well-known/webfinger`) && !Path(`/.well-known/nodeinfo`)"
-      - "traefik.http.routers.spectre-ghost-insecure.entrypoints=http"
-      - "traefik.http.routers.spectre-ghost-insecure.service=spectre-ghost"
-      - "traefik.http.middlewares.spectre-redirect-to-https.redirectscheme.scheme=https"
-      - "traefik.http.middlewares.spectre-redirect-to-https.redirectscheme.permanent=true"
-      - "traefik.http.routers.spectre-ghost-insecure.middlewares=spectre-redirect-to-https"
+      # HTTP=>HTTPS redirect
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`) && !PathPrefix(`/.ghost/activitypub/`) && !Path(`/.well-known/webfinger`) && !Path(`/.well-known/nodeinfo`)"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.entrypoints=http"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.service=${CONTAINER_NAME_PREFIX}-ghost"
+      - "traefik.http.middlewares.${CONTAINER_NAME_PREFIX}-redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.${CONTAINER_NAME_PREFIX}-redirect-to-https.redirectscheme.permanent=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.middlewares=${CONTAINER_NAME_PREFIX}-redirect-to-https"
       # HTTPS Ghost
-      - "traefik.http.routers.spectre-ghost.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`) && !PathPrefix(`/.ghost/activitypub/`) && !Path(`/.well-known/webfinger`) && !Path(`/.well-known/nodeinfo`)"
-      - "traefik.http.routers.spectre-ghost.entrypoints=https"
-      - "traefik.http.routers.spectre-ghost.service=spectre-ghost"
-      - "traefik.http.services.spectre-ghost.loadbalancer.server.port=2368"
-      - "traefik.http.services.spectre-ghost.loadbalancer.passhostheader=true"
-      - "traefik.http.routers.spectre-ghost.tls=true"
-      - "traefik.http.routers.spectre-ghost.tls.certresolver=http"
-      - "traefik.http.routers.spectre-ghost.middlewares=compresstraefik"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`) && !PathPrefix(`/.ghost/activitypub/`) && !Path(`/.well-known/webfinger`) && !Path(`/.well-known/nodeinfo`)"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.entrypoints=https"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.service=${CONTAINER_NAME_PREFIX}-ghost"
+      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-ghost.loadbalancer.server.port=2368"
+      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-ghost.loadbalancer.passhostheader=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.tls=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.tls.certresolver=http"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.middlewares=compresstraefik"
       - "traefik.http.middlewares.compresstraefik.compress=true"
       # ActivityPub HTTPS
-      - "traefik.http.routers.spectre-ghost-activitypub.entrypoints=https"
-      - "traefik.http.routers.spectre-ghost-activitypub.rule=Host(`${DOMAIN}`) && (PathPrefix(`/.ghost/activitypub/`) || Path(`/.well-known/webfinger`) || Path(`/.well-known/nodeinfo`))"
-      - "traefik.http.routers.spectre-ghost-activitypub.service=spectre-ghost-activitypub"
-      - "traefik.http.services.spectre-ghost-activitypub.loadbalancer.server.url=https://ap.ghost.org"
-      - "traefik.http.services.spectre-ghost-activitypub.loadbalancer.passhostheader=true"
-      - "traefik.http.routers.spectre-ghost-activitypub.tls=true"
-      - "traefik.http.routers.spectre-ghost-activitypub.tls.certresolver=http"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.entrypoints=https"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.rule=Host(`${DOMAIN}`) && (PathPrefix(`/.ghost/activitypub/`) || Path(`/.well-known/webfinger`) || Path(`/.well-known/nodeinfo`))"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.service=${CONTAINER_NAME_PREFIX}-ghost-activitypub"
+      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-ghost-activitypub.loadbalancer.server.url=https://ap.ghost.org"
+      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-ghost-activitypub.loadbalancer.passhostheader=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.tls=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.tls.certresolver=http"
       - "traefik.docker.network=proxy"
 
   ghost-bootstrap:
     container_name: ${CONTAINER_NAME_PREFIX}-bootstrap
     build:
       context: ./bootstrap
-    image: hutt/ghost-spectre:latest
+      dockerfile: Dockerfile
+    image: ${CONTAINER_NAME_PREFIX}/ghost-bootstrap:latest
     restart: "no"
     env_file:
       - .env
     volumes:
       - ./content:/var/lib/ghost/content
       - ./config.production.json:/var/lib/ghost/config.production.json:ro
-      - ./routes.yaml:/bootstrap/routes.yaml:ro
+      - ./bootstrap/routes.yaml:/bootstrap/routes.yaml:ro
       - ./bootstrap/pages:/bootstrap/pages:ro
       - ./bootstrap/posts:/bootstrap/posts:ro
+      - ./bootstrap:/bootstrap
     depends_on:
       ghost:
         condition: service_healthy
@@ -121,9 +124,20 @@ services:
     networks:
       - default
     command: >
-      redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save "" --tcp-backlog 128 --timeout 300 --tcp-keepalive 60 --databases 1 --hz 10 --loglevel warning --client-output-buffer-limit "normal 0 0 0" --stop-writes-on-bgsave-error no
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+      --tcp-backlog 128
+      --timeout 300
+      --tcp-keepalive 60
+      --databases 1
+      --hz 10
+      --loglevel warning
+      --client-output-buffer-limit "normal 0 0 0"
+      --stop-writes-on-bgsave-error no
     healthcheck:
-      test: ["CMD","redis-cli","ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 1s
       retries: 3
@@ -141,19 +155,19 @@ services:
       - default
       - proxy
     healthcheck:
-          test: curl --fail http://localhost/proxy/npm/@tryghost/sodo-search@latest/umd/sodo-search.min.js || exit 1
-          interval: 60s
-          retries: 5
-          start_period: 20s
-          timeout: 10s
+      test: curl --fail http://localhost/proxy/npm/@tryghost/sodo-search@latest/umd/sodo-search.min.js || exit 1
+      interval: 60s
+      retries: 5
+      start_period: 20s
+      timeout: 10s
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.spectre-proxy.rule=Host(`${DOMAIN}`) && PathPrefix(`/proxy/`)"
-      - "traefik.http.routers.spectre-proxy.entrypoints=https"
-      - "traefik.http.routers.spectre-proxy.tls=true"
-      - "traefik.http.routers.spectre-proxy.tls.certresolver=http"
-      - "traefik.http.services.spectre-proxy.loadbalancer.server.port=80"
-      - "traefik.http.services.spectre-proxy.loadbalancer.passhostheader=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-proxy.rule=Host(`${DOMAIN}`) && PathPrefix(`/proxy/`)"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-proxy.entrypoints=https"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-proxy.tls=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-proxy.tls.certresolver=http"
+      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-proxy.loadbalancer.server.port=80"
+      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-proxy.loadbalancer.passhostheader=true"
       - "traefik.docker.network=proxy"
 
 volumes:

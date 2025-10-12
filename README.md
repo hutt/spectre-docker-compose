@@ -4,12 +4,14 @@ Dieses Repository enthält eine Docker-Compose-Vorlage für eine datenschutzfreu
 
 ## Features
 
-- Ghost CMS in Docker  
-- Nginx-Proxy für `/proxy/npm/` (24h Cache) und `/proxy/youtube/` (1h Cache)  
-- Header-Strippen zum Schutz personenbezogener Daten  
-- Redis-Cache-Adapter für Ghost  
-- Traefik für SSL (Let's Encrypt) und Routing  
-- Konfiguration über `.env`
+✅ **Vollautomatische Einrichtung**: Kein manueller Aufwand im Admin-Interface  
+✅ **Spectre-Theme**: Automatischer Download und Aktivierung  
+✅ **Vorkonfigurierte Inhalte**: 5 statische Seiten + 2 Beispiel-Posts  
+✅ **Smart Routing**: Blog unter `/blog/`, Presse unter `/presse/mitteilungen/`  
+✅ **Datenschutzfreundlich**: Lokaler Proxy für externe Assets (NPM, YouTube)  
+✅ **Redis-Caching**: Optimierte Performance  
+✅ **Traefik-Integration**: SSL und Routing
+✅ **Konfiguration über `.env`**
 
 > [!WARNING]
 > Datenschutzfreundliche YouTube-Embeds funktionieren nur in Kombination mit meinem Theme [Spectre](https://github.com/hutt/spectre/blob/main/README.de.md#datenschutzfreundliche-youtube-video-einbettungen).
@@ -21,41 +23,31 @@ Dieses Repository enthält eine Docker-Compose-Vorlage für eine datenschutzfreu
 - Traefik v3 als Ingress (SSL, Compression). Installation:  
   https://goneuland.de/traefik-v3-installation-konfiguration-und-crowdsec-security/
 
-## Projektstruktur
+## Schnellstart
 
-```
-meine-website.de/
-├── docker-compose.yml
-├── .env
-├── config.production.json
-├── nginx-proxy.conf
-├── content/          # Ghost-Daten, Themes
-├── redis/            # Redis-Persistenz
-└── proxy-cache/      # Nginx-Cache
+Repository klonen
+
+```bash
+git clone https://github.com/hutt/spectre-docker-compose.git meine-website.de
+cd meine-website.de
 ```
 
-## Installation
+Umgebungsvariablen konfigurieren
 
-1. Repository klonen  
-   ```
-   git clone https://github.com/hutt/spectre-docker-compose.git meine-website.de
-   cd meine-website.de
-   ```
-2. `.env` kopieren und anpassen  
-   ```
-   cp example.env .env
-   nano .env # Settings setzen
-   ```
-3. `docker-compose.yml` anpassen  
-   Container- und Label-Bezeichnungen müssen ggfs. angepasst werden.
-   ```
-   docker-compose.yml
-   ```
-4. Docker-Container starten  
-   ```
-   docker compose up -d
-   ```
-5. Logs prüfen  
-   ```
-   docker compose logs -f
-   ```
+```bash
+cp example.env .env
+nano .env # Anpassen: Domain, E-Mail, Passwort, Blog-Titel...
+```
+
+Starten
+```bash
+docker compose up -d
+```
+
+Logs verfolgen
+
+```bash
+docker compose logs -f ghost-bootstrap
+```
+
+Nach ca. 2-3 Minuten ist das Grundgerüst der Website fertig.
