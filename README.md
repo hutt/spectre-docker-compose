@@ -25,28 +25,21 @@ Dieses Repository enthält eine Docker-Compose-Vorlage für eine datenschutzfreu
 
 ## Schnellstart
 
-Repository klonen
-
 ```bash
-git clone https://github.com/hutt/spectre-docker-compose.git meine-website.de
-cd meine-website.de
-```
+# Repository klonen & ins Arbeitsverzeichnis wechseln
+git clone https://github.com/hutt/spectre-docker-compose.git meine-website.de && cd meine-website.de
 
-Umgebungsvariablen konfigurieren
-
-```bash
+# Umgebungsvariablen konfigurieren
 cp example.env .env
 nano .env # Anpassen: Domain, E-Mail, Passwort, Blog-Titel...
-```
 
-Starten
-```bash
+# Docker Image bauen
+docker compose build ghost-bootstrap
+
+# Deps starten und Container hochfahren:
 docker compose up -d
-```
 
-Logs verfolgen
-
-```bash
+# Logs verfolgen
 docker compose logs -f ghost-bootstrap
 ```
 

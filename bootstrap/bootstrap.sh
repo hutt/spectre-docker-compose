@@ -2,13 +2,14 @@
 set -euo pipefail
 
 # ============================================================================
-# Ghost Bootstrap Script – robust, idempotent & compatible with v6.x
+# Ghost Bootstrap Script – robust, idempotent & compatible with v6.3+
 # ============================================================================
 
 BASE_URL="https://${DOMAIN}"
 UA="Ghost-Bootstrap/1.0"
 KEYS_FILE="/bootstrap/generated.keys.env"
 ROUTES_FILE="/bootstrap/routes.yaml"
+GHOST_VERSION="v6.3"  # Spezifische Version für Ghost 6.3
 
 log() {
     printf '%s %s\n' "$(date +'%F %T')" "$*" >&2
@@ -20,7 +21,7 @@ log() {
 setup_needed() {
     local body
     body=$(curl -sSf \
-        -H "Accept-Version: v6" \
+        -H "Accept-Version: ${GHOST_VERSION}" \
         -H "User-Agent: ${UA}" \
         "${BASE_URL}/ghost/api/admin/authentication/setup/")
     
@@ -47,7 +48,7 @@ do_setup() {
     
     resp=$(curl -sS -D - \
         -H "Content-Type: application/json" \
-        -H "Accept-Version: v6" \
+        -H "Accept-Version: ${GHOST_VERSION}" \
         -H "User-Agent: ${UA}" \
         -X POST -d "$payload" \
         "${BASE_URL}/ghost/api/admin/authentication/setup/")
@@ -89,7 +90,7 @@ api_jwt() {
     curl -sSf \
         -H "Authorization: Ghost ${JWT_TOKEN}" \
         -H "Content-Type: application/json" \
-        -H "Accept-Version: v6" \
+        -H "Accept-Version: ${GHOST_VERSION}" \
         -H "User-Agent: ${UA}" \
         -X "$method" \
         ${body:+-d "$body"} \
@@ -106,42 +107,94 @@ create_integration_via_session() {
     cookie=$(mktemp -t ghost-cookie.XXXXXX)
     hdr=$(mktemp -t ghost-hdr.XXXXXX)
     
-    # Create admin session (new endpoint for Ghost 6.x)
+    trap "rm -f '$cookie' '$hdr'" EXIT
+    
+    # Create admin session - korrigierter Endpoint
+    log "Attempting session login..."
     curl -sS -D "$hdr" -c "$cookie" -b "$cookie" \
         -H "Content-Type: application/json" \
-        -H "Accept-Version: v6" \
+        -H "Accept-Version: ${GHOST_VERSION}" \
         -H "User-Agent: ${UA}" \
         -X POST \
         -d "$(jq -nc --arg u "$GHOST_SETUP_EMAIL" --arg p "$GHOST_SETUP_PASSWORD" \
             '{username:$u,password:$p}')" \
-        "${BASE_URL}/ghost/api/admin/authentication/session/" >/dev/null
+        "${BASE_URL}/ghost/api/admin/session/" >/dev/null
+    
+    # Check if session was created successfully
+    session_code=$(awk 'NR==1{print $2}' "$hdr")
+    if [ "$session_code" != "201" ] && [ "$session_code" != "200" ]; then
+        log "Session creation failed with code: $session_code"
+        log "Trying alternative approach..."
+        
+        # Alternative: Direkt über Setup-Token falls verfügbar
+        return 1
+    fi
     
     # Extract CSRF token from response headers
+    log "Getting CSRF token..."
     curl -sS -D "$hdr" -c "$cookie" -b "$cookie" \
-        -H "Accept-Version: v6" \
+        -H "Accept-Version: ${GHOST_VERSION}" \
         -H "User-Agent: ${UA}" \
         "${BASE_URL}/ghost/api/admin/site/" >/dev/null
     
     csrf=$(awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="x-csrf-token"{gsub(/\r/,"",$2);print $2}' "$hdr" | head -n1)
     if [ -z "$csrf" ]; then
-        log "CSRF token not received"; exit 1
+        log "CSRF token not received - trying cookie-based approach"
+        # Alternative: CSRF aus Cookie
+        csrf=$(awk -F'csrf=' '/Set-Cookie.*csrf=/{gsub(/;.*/,""); print $2}' "$hdr" | head -n1)
     fi
+    
+    if [ -z "$csrf" ]; then
+        log "No CSRF token found"
+        return 1
+    fi
+    
+    log "CSRF token received: ${csrf:0:10}..."
     
     payload='{"integrations":[{"name":"Bootstrap Integration"}]}'
     resp=$(curl -sS -D "$hdr" -c "$cookie" -b "$cookie" \
         -H "Content-Type: application/json" \
-        -H "Accept-Version: v6" \
+        -H "Accept-Version: ${GHOST_VERSION}" \
         -H "User-Agent: ${UA}" \
         -H "Origin: ${BASE_URL}" \
         -H "X-CSRF-Token: ${csrf}" \
         -X POST -d "$payload" \
         "${BASE_URL}/ghost/api/admin/integrations/")
     
-    # Return: JSON with admin_api_key and content_api_key
-    echo "$resp" | jq -r \
-        '.integrations[0]|{admin_api_key:(.api_keys[]|select(.type=="admin")|.secret),content_api_key:(.api_keys[]|select(.type=="content")|.secret)}'
+    if echo "$resp" | jq -e '.integrations[0]' >/dev/null 2>&1; then
+        # Return: JSON with admin_api_key and content_api_key
+        echo "$resp" | jq -r \
+            '.integrations[0]|{admin_api_key:(.api_keys[]|select(.type=="admin")|.secret),content_api_key:(.api_keys[]|select(.type=="content")|.secret)}'
+    else
+        log "Integration creation failed: $resp"
+        return 1
+    fi
+}
+
+# ----------------------------------------------------------------------------  
+# Alternative: Create integration without session (direct API approach)
+# ----------------------------------------------------------------------------
+create_integration_direct() {
+    log "Attempting direct integration creation..."
     
-    rm -f "$cookie" "$hdr"
+    # Erst versuchen, ob bereits eine Integration existiert
+    local existing_integrations
+    existing_integrations=$(curl -sS \
+        -H "Accept-Version: ${GHOST_VERSION}" \
+        -H "User-Agent: ${UA}" \
+        "${BASE_URL}/ghost/api/admin/integrations/" 2>/dev/null || echo '{"integrations":[]}')
+    
+    local bootstrap_integration
+    bootstrap_integration=$(echo "$existing_integrations" | jq -r '.integrations[]? | select(.name=="Bootstrap Integration")')
+    
+    if [ -n "$bootstrap_integration" ] && [ "$bootstrap_integration" != "null" ]; then
+        log "Found existing Bootstrap Integration"
+        echo "$existing_integrations" | jq -r \
+            '.integrations[]|select(.name=="Bootstrap Integration")|{admin_api_key:(.api_keys[]|select(.type=="admin")|.secret),content_api_key:(.api_keys[]|select(.type=="content")|.secret)}'
+        return 0
+    fi
+    
+    return 1
 }
 
 # ----------------------------------------------------------------------------  
@@ -221,14 +274,15 @@ upload_activate_theme() {
     # Upload theme using multipart form data
     theme_resp=$(curl -sS \
         -H "Authorization: Ghost ${JWT_TOKEN}" \
-        -H "Accept-Version: v6" \
+        -H "Accept-Version: ${GHOST_VERSION}" \
         -H "User-Agent: ${UA}" \
         -F "file=@/tmp/spectre.zip" \
         "${BASE_URL}/ghost/api/admin/themes/upload/")
     
     theme_name=$(echo "$theme_resp" | jq -r '.themes[0].name')
     if [ -z "$theme_name" ] || [ "$theme_name" = "null" ]; then
-        log "Theme upload failed"; exit 1
+        log "Theme upload failed: $theme_resp"
+        exit 1
     fi
     
     # Activate the uploaded theme
@@ -253,19 +307,21 @@ import_routes() {
     cookie=$(mktemp -t ghost-cookie.XXXXXX)
     hdr=$(mktemp -t ghost-hdr.XXXXXX)
     
+    trap "rm -f '$cookie' '$hdr'" EXIT
+    
     # Create admin session
     curl -sS -D "$hdr" -c "$cookie" -b "$cookie" \
         -H "Content-Type: application/json" \
-        -H "Accept-Version: v6" \
+        -H "Accept-Version: ${GHOST_VERSION}" \
         -H "User-Agent: ${UA}" \
         -X POST \
         -d "$(jq -nc --arg u "$GHOST_SETUP_EMAIL" --arg p "$GHOST_SETUP_PASSWORD" \
             '{username:$u,password:$p}')" \
-        "${BASE_URL}/ghost/api/admin/authentication/session/" >/dev/null
+        "${BASE_URL}/ghost/api/admin/session/" >/dev/null
     
     # Get CSRF token
     curl -sS -D "$hdr" -c "$cookie" -b "$cookie" \
-        -H "Accept-Version: v6" \
+        -H "Accept-Version: ${GHOST_VERSION}" \
         -H "User-Agent: ${UA}" \
         "${BASE_URL}/ghost/api/admin/site/" >/dev/null
     
@@ -273,7 +329,7 @@ import_routes() {
     
     if [ -n "$csrf" ]; then
         curl -sS -c "$cookie" -b "$cookie" \
-            -H "Accept-Version: v6" \
+            -H "Accept-Version: ${GHOST_VERSION}" \
             -H "User-Agent: ${UA}" \
             -H "Origin: ${BASE_URL}" \
             -H "X-CSRF-Token: ${csrf}" \
@@ -283,8 +339,6 @@ import_routes() {
     else
         log "Could not get CSRF token for routes import"
     fi
-    
-    rm -f "$cookie" "$hdr"
 }
 
 # ----------------------------------------------------------------------------
@@ -435,7 +489,17 @@ main() {
     # 2) Initialize JWT: Load keys or create integration one-time
     if ! load_keys; then
         local keys_json
-        keys_json=$(create_integration_via_session)
+        
+        # Try different approaches to get API keys
+        if keys_json=$(create_integration_via_session); then
+            log "Integration created via session"
+        elif keys_json=$(create_integration_direct); then
+            log "Integration found via direct API"
+        else
+            log "Could not create or find integration"
+            exit 1
+        fi
+        
         persist_keys "$keys_json"
         GHOST_ADMIN_API_KEY=$(echo "$keys_json" | jq -r '.admin_api_key')
         generate_jwt "$GHOST_ADMIN_API_KEY"
