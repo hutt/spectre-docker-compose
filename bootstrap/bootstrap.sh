@@ -4,7 +4,7 @@ set -euo pipefail
 # Erwartet über env_file (.env):
 # DOMAIN, SPECTRE_ZIP_URL
 # GHOST_SETUP_NAME, GHOST_SETUP_EMAIL, GHOST_SETUP_PASSWORD, GHOST_SETUP_BLOG_TITLE
-# Optional: GHOST_ADMIN_API_KEY (id:secret), GHOST_ACCEPT_VERSION, CODEINJECTION_HEAD, INTEGRATION_NAME
+# Optional: GHOST_ADMIN_API_KEY (id:secret), GHOST_ACCEPT_VERSION, CODEINJECTION_HEAD, INTEGRATION_NAME, GHOST_UPLOAD_BASE
 
 # Basis-ENV
 DOMAIN="${DOMAIN:?missing DOMAIN}"
@@ -19,7 +19,7 @@ SETUP_PASSWORD="${GHOST_SETUP_PASSWORD:?missing GHOST_SETUP_PASSWORD}"
 SETUP_BLOG_TITLE="${GHOST_SETUP_BLOG_TITLE:?missing GHOST_SETUP_BLOG_TITLE}"
 
 # Admin API Key optional (id:secret). Falls fehlt, wird er per Session erstellt.
-ADMIN_API_KEY="${GHOST_ADMIN_API_KEY:-}"
+GHOST_ADMIN_API_KEY="${GHOST_ADMIN_API_KEY:-}"
 
 COOKIE_JAR="/tmp/ghost_cookie.txt"
 MARKER_DIR="/tmp/ghost-bootstrap"
@@ -77,10 +77,9 @@ if [ ! -f "${MARKER_DIR}/setup.done" ]; then
 fi
 
 # 2) Falls kein Admin API Key vorhanden, Integration per Session-Login anlegen
-if [ -z "${ADMIN_API_KEY}" ] && [ ! -f "${MARKER_DIR}/integration.done" ]; then
+if [ -z "${GHOST_ADMIN_API_KEY}" ] && [ ! -f "${MARKER_DIR}/integration.done" ]; then
   echo "[2] Erzeuge Admin API Key per Session-Login ..."
   rm -f "${COOKIE_JAR}"
-  # Session-Login mit den Setup-Credentials (GHOST_SETUP_EMAIL/PASSWORD)
   curl -sSf -c "${COOKIE_JAR}" -X POST "${ORIGIN}/ghost/api/admin/session/" \
     -H "Origin: ${ORIGIN}" \
     -H "Accept-Version: ${ACCEPT_VERSION}" \
@@ -108,12 +107,12 @@ if [ -z "${ADMIN_API_KEY}" ] && [ ! -f "${MARKER_DIR}/integration.done" ]; then
     exit 1
   fi
 
-  ADMIN_API_KEY="${admin_key_id}:${admin_key_secret}"
-  printf "%s" "${ADMIN_API_KEY}" > "${INTEGRATION_KEY_FILE}"
+  GHOST_ADMIN_API_KEY="${admin_key_id}:${admin_key_secret}"
+  printf "%s" "${GHOST_ADMIN_API_KEY}" > "${INTEGRATION_KEY_FILE}"
   touch "${MARKER_DIR}/integration.done"
   echo "Admin API Key erstellt."
 else
-  printf "%s" "${ADMIN_API_KEY}" > "${INTEGRATION_KEY_FILE}"
+  printf "%s" "${GHOST_ADMIN_API_KEY}" > "${INTEGRATION_KEY_FILE}"
 fi
 
 # 3) Admin JWT erzeugen
@@ -127,18 +126,19 @@ fi
 # 4) Theme spectre hochladen & aktivieren
 if [ ! -f "${MARKER_DIR}/theme.done" ]; then
   echo "[4] Lade Spectre-Theme ..."
-
   curl -sSfL -o /tmp/spectre.zip "${SPECTRE_ZIP_URL}"
-  # ZIP validieren
-  if ! file /tmp/spectre.zip | grep -qi 'zip archive'; then
-    echo "Fehler: spectre.zip scheint keine ZIP-Datei zu sein (Download-URL prüfen)"; exit 1
-  fi
-
-  # Optional: interne URL statt externem Host, um Proxy-Probleme zu vermeiden
+  # Optional interne Base-URL, um Proxy-Einflüsse zu vermeiden (z.B. http://test-ghost-ghost:2368)
   GHOST_UPLOAD_BASE="${GHOST_UPLOAD_BASE:-${ORIGIN}}"
-  # Beispiel: in .env GHOST_UPLOAD_BASE="http://spectre-ghost:2368" setzen, falls Traefik 405 verursacht
-  api_auth POST "${GHOST_UPLOAD_BASE#${ORIGIN}}/ghost/api/admin/themes/upload/" \
-    -F "file=@/tmp/spectre.zip" >/dev/null
+  # Wenn GHOST_UPLOAD_BASE == ORIGIN, api_auth POST "/ghost/api/..." nutzen
+  if [ "${GHOST_UPLOAD_BASE}" = "${ORIGIN}" ]; then
+    api_auth POST "/ghost/api/admin/themes/upload/" -F "file=@/tmp/spectre.zip" >/dev/null
+  else
+    # Direkt an interne URL senden, aber dennoch Authorization/Accept-Version mitsenden
+    curl -sSf -X POST "${GHOST_UPLOAD_BASE}/ghost/api/admin/themes/upload/" \
+      -H "Accept-Version: ${ACCEPT_VERSION}" \
+      -H "Authorization: Ghost $(cat "${JWT_FILE}")" \
+      -F "file=@/tmp/spectre.zip" >/dev/null
+  fi
   set +e
   api_auth PUT "/ghost/api/admin/themes/spectre/activate/" >/dev/null 2>&1
   set -e
@@ -146,7 +146,7 @@ if [ ! -f "${MARKER_DIR}/theme.done" ]; then
   echo "Theme aktiviert."
 fi
 
-# Hilfsfunktionen: Platzhalter ersetzen, JSON-escape
+# Hilfsfunktionen
 json_escape() {
   python3 - <<'PY'
 import sys, json
@@ -169,7 +169,6 @@ render_html() {
 # 5) Inhalte anlegen
 if [ ! -f "${MARKER_DIR}/content.done" ]; then
   echo "[5] Erzeuge Demo-Inhalte ..."
-
   create_page() {
     local title="$1"
     local slug="$2"
@@ -182,7 +181,6 @@ if [ ! -f "${MARKER_DIR}/content.done" ]; then
       -H "Content-Type: application/json" \
       --data "$payload" >/dev/null
   }
-
   create_post() {
     local title="$1"
     local slug="$2"
@@ -200,23 +198,18 @@ if [ ! -f "${MARKER_DIR}/content.done" ]; then
       -H "Content-Type: application/json" \
       --data "$payload" >/dev/null
   }
-
-  # Seiten
   create_page "Start" "start" "/bootstrap/pages/start.html"
   create_page "Beispielseite" "beispielseite" "/bootstrap/pages/beispielseite.html"
   create_page "Presse" "presse" "/bootstrap/pages/presse.html"
   create_page "Impressum" "impressum" "/bootstrap/pages/impressum.html"
   create_page "Datenschutz" "datenschutz" "/bootstrap/pages/datenschutz.html"
-
-  # Posts
   create_post "Beispiel‑Post" "beispiel-post" "/bootstrap/posts/beispiel-post.html" ""
   create_post "Beispiel‑Pressemitteilung" "beispiel-pressemitteilung" "/bootstrap/posts/beispiel-pressemitteilung.html" "#pressemitteilung"
-
   touch "${MARKER_DIR}/content.done"
   echo "Inhalte angelegt."
 fi
 
-# 6) Session-Login für routes & Code-Injection (falls noch nicht vorhanden)
+# 6) Session-Login für routes & Code-Injection
 if [ ! -f "${MARKER_DIR}/session.done" ]; then
   echo "[6] Session-Login (für routes/Code-Injection) ..."
   rm -f "${COOKIE_JAR}"
