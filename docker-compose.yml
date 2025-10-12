@@ -129,6 +129,7 @@ services:
     env_file:
       - .env
     volumes:
+      - ./tmp:/tmp
       - ./bootstrap/routes.yaml:/bootstrap/routes.yaml:ro
       - ./bootstrap/pages:/bootstrap/pages:ro
       - ./bootstrap/posts:/bootstrap/posts:ro

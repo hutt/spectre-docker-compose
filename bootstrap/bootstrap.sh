@@ -49,7 +49,7 @@ api_auth() {
     "${extra_args[@]}"
 }
 
-echo "[0] Warte auf Ghost Admin API ..."
+echo "Warte auf Ghost Admin API ..."
 for i in {1..60}; do
   if api GET "/ghost/api/admin/site/" >/dev/null 2>&1; then
     echo "Ghost Admin API erreichbar."
@@ -93,7 +93,12 @@ if [ -z "${GHOST_ADMIN_API_KEY}" ] && [ ! -f "${MARKER_DIR}/integration.done" ];
     -H "Content-Type: application/json" \
     --data "$(jq -n --arg name "$INTEGRATION_NAME" '{integrations:[{name:$name,description:"Automated bootstrap key"}]}')")
 
-  integration_id=$(echo "$create_resp" | jq -r '.integrations[0].id')
+  integration_id=$(printf '%s' "$create_resp" | jq -r '.integrations[0].id // empty')
+  if [ -z "$integration_id" ]; then
+    echo "Fehler: Integration wurde nicht angelegt (keine ID erhalten). Response:"
+    printf '%s\n' "$create_resp"
+    exit 1
+  fi
 
   keys_resp=$(curl -sSf -b "${COOKIE_JAR}" -X GET "${ORIGIN}/ghost/api/admin/integrations/${integration_id}/api_keys/" \
     -H "Origin: ${ORIGIN}" \
@@ -123,12 +128,67 @@ if [ ! -f "${MARKER_DIR}/jwt.done" ]; then
   echo "Admin JWT erstellt."
 fi
 
+# --- Diagnose-Block (optional) ---
+if [ "${DEBUG_BOOTSTRAP:-0}" = "1" ]; then
+  echo "[D] Diagnose aktiv"
+
+  # 1) JWT Header & Payload anzeigen (base64url decode)
+  JWT="$(cat "${JWT_FILE}")"
+  JWT_HEADER_B64="${JWT%%.*}"
+  JWT_PAYLOAD_B64="${JWT#*.}"; JWT_PAYLOAD_B64="${JWT_PAYLOAD_B64%.*}"
+
+  b64urldecode() { tr '_-' '/+' | base64 -d 2>/dev/null || true; }
+
+  echo "[D] JWT Header:"
+  printf '%s' "${JWT_HEADER_B64}" | b64urldecode | jq . || printf '%s' "${JWT_HEADER_B64}" | b64urldecode
+
+  echo "[D] JWT Payload:"
+  printf '%s' "${JWT_PAYLOAD_B64}" | b64urldecode | jq . || printf '%s' "${JWT_PAYLOAD_B64}" | b64urldecode
+
+  # 2) Ablaufzeit prüfen
+  NOW="$(date +%s)"
+  EXP="$(printf '%s' "${JWT_PAYLOAD_B64}" | b64urldecode | jq -r '.exp // 0')"
+  AUD="$(printf '%s' "${JWT_PAYLOAD_B64}" | b64urldecode | jq -r '.aud // ""')"
+  if [ -n "$EXP" ] && [ "$EXP" -le "$NOW" ]; then
+    echo "[D] WARN: JWT abgelaufen (exp <= now: $EXP <= $NOW)"
+  fi
+  if [ "$AUD" != "/admin/" ]; then
+    echo "[D] WARN: JWT aud unerwartet: '$AUD' (sollte '/admin/' sein)"
+  fi
+
+  # 3) Admin Keys abrufen mit gleichem JWT (Auth-Test)
+  if [ -s "${INTEGRATION_KEY_FILE}" ]; then
+    INT_ID="$(cut -d: -f1 < "${INTEGRATION_KEY_FILE}")"
+    echo "[D] Prüfe Admin-Keys via JWT für Integration ${INT_ID} ..."
+    curl -sv -X GET "${ORIGIN}/ghost/api/admin/integrations/${INT_ID}/api_keys/" \
+      -H "Accept-Version: ${ACCEPT_VERSION}" \
+      -H "Authorization: Ghost ${JWT}" \
+      -o /tmp/diag_keys.json || true
+    echo "[D] Keys Response (gekürzt):"
+    head -c 800 /tmp/diag_keys.json; echo
+  fi
+
+  # 5) Probe-Upload mit -v (ohne Abbruch)
+  TEST_BASE="${GHOST_UPLOAD_BASE:-${ORIGIN}}"
+  echo "[D] Probe-Upload an ${TEST_BASE}/ghost/api/admin/themes/upload/ (verbose, no-fail)"
+  curl -sv -X POST "${TEST_BASE}/ghost/api/admin/themes/upload/" \
+    -H "Accept-Version: ${ACCEPT_VERSION}" \
+    -H "Authorization: Ghost ${JWT}" \
+    -F "file=@/tmp/spectre.zip" \
+    -o /tmp/diag_upload.out || true
+  echo "[D] Upload Response (gekürzt):"
+  head -c 800 /tmp/diag_upload.out; echo
+fi
+# --- Ende Diagnose-Block ---
+
+
 # 4) Theme spectre hochladen & aktivieren
 if [ ! -f "${MARKER_DIR}/theme.done" ]; then
   echo "[4] Lade Spectre-Theme ..."
-  curl -sSfL -o /tmp/spectre.zip "${SPECTRE_ZIP_URL}"
+  curl -sSfL --retry 5 --retry-all-errors -o /tmp/spectre.zip "${SPECTRE_ZIP_URL}"
   # Optional interne Base-URL, um Proxy-Einflüsse zu vermeiden (z.B. http://test-ghost-ghost:2368)
   GHOST_UPLOAD_BASE="${GHOST_UPLOAD_BASE:-${ORIGIN}}"
+  # GHOST_UPLOAD_BASE="http://ghost:2368"
   # Wenn GHOST_UPLOAD_BASE == ORIGIN, api_auth POST "/ghost/api/..." nutzen
   if [ "${GHOST_UPLOAD_BASE}" = "${ORIGIN}" ]; then
     api_auth POST "/ghost/api/admin/themes/upload/" -F "file=@/tmp/spectre.zip" >/dev/null
