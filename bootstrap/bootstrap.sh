@@ -1,519 +1,340 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ============================================================================
-# Ghost Bootstrap Script – robust, idempotent & compatible with v6.3+
-# ============================================================================
+# ============================================
+# Ghost Bootstrap – Auto-Install, idempotent
+# ============================================
+
+# Required ENV:
+# - DOMAIN
+# - SPECTRE_ZIP_URL
+# - GHOST_SETUP_EMAIL
+# - GHOST_SETUP_NAME
+# - GHOST_SETUP_BLOG_TITLE
+# - Optional: BOOTSTRAP_CLEANUP_INTEGRATION=true|false
 
 BASE_URL="https://${DOMAIN}"
 UA="Ghost-Bootstrap/1.0"
-KEYS_FILE="/bootstrap/generated.keys.env"
-ROUTES_FILE="/bootstrap/routes.yaml"
-GHOST_VERSION="v6.3"  # Spezifische Version für Ghost 6.3
+DB_PATH="/var/lib/ghost/content/data/ghost.db"
+ROUTES_SRC="/bootstrap/routes.yaml"
+ROUTES_DST="/var/lib/ghost/content/settings/routes.yaml"
+TMP_DIR="/tmp/ghost-bootstrap"
+SPECTRE_ZIP="${TMP_DIR}/spectre.zip"
+
+mkdir -p "${TMP_DIR}"
 
 log() {
-    printf '%s %s\n' "$(date +'%F %T')" "$*" >&2
+  printf '%s %s\n' "$(date +'%F %T')" "$*" >&2
 }
 
-# ----------------------------------------------------------------------------
-# Step 1: Check if initial setup is needed
-# ----------------------------------------------------------------------------
-setup_needed() {
-    local body
-    body=$(curl -sSf \
-        -H "Accept-Version: ${GHOST_VERSION}" \
-        -H "User-Agent: ${UA}" \
-        "${BASE_URL}/ghost/api/admin/authentication/setup/")
-    
-    if echo "$body" | jq -e '.setup[0].status == true' >/dev/null; then
-        echo "yes"
-    else
-        echo "no"
+# ---------------------------
+# Retry helper (exponential backoff)
+# ---------------------------
+retry() {
+  # retry <max_attempts> <initial_delay_seconds> <cmd...>
+  local max=$1; shift
+  local delay=$1; shift
+  local attempt=1
+  local rc=0
+
+  while true; do
+    if "$@"; then
+      return 0
     fi
-}
-
-# ----------------------------------------------------------------------------  
-# Step 2: Initial setup (create owner account)
-# ----------------------------------------------------------------------------
-do_setup() {
-    log "Initial-Setup..."
-    local payload resp code
-    
-    payload=$(jq -nc \
-        --arg name "$GHOST_SETUP_NAME" \
-        --arg email "$GHOST_SETUP_EMAIL" \
-        --arg password "$GHOST_SETUP_PASSWORD" \
-        --arg title "$GHOST_SETUP_BLOG_TITLE" \
-        '{setup:[{name:$name,email:$email,password:$password,blogTitle:$title}]}')
-    
-    resp=$(curl -sS -D - \
-        -H "Content-Type: application/json" \
-        -H "Accept-Version: ${GHOST_VERSION}" \
-        -H "User-Agent: ${UA}" \
-        -X POST -d "$payload" \
-        "${BASE_URL}/ghost/api/admin/authentication/setup/")
-    
-    code=$(echo "$resp" | awk 'NR==1{print $2}')
-    if [ "$code" != "201" ]; then
-        log "Setup failed (HTTP $code)"; exit 1
+    rc=$?
+    if [ $attempt -ge $max ]; then
+      return $rc
     fi
-    
-    echo "$resp" | sed -n '/^{/,/^}/p' > /tmp/setup-response.json
-    log "Setup successful."
+    log "Retry $attempt/$max failed (rc=$rc). Sleeping ${delay}s..."
+    sleep "$delay"
+    delay=$((delay*2))
+    attempt=$((attempt+1))
+  done
 }
 
-# ----------------------------------------------------------------------------
-# Generate JWT token from admin API key
-# ----------------------------------------------------------------------------
+# ---------------------------
+# DB exist check
+# ---------------------------
+db_exists() {
+  [ -s "$DB_PATH" ]
+}
+
+# ---------------------------
+# Detect Ghost API Version
+# ---------------------------
+detect_api_version() {
+  local hdr ver
+  hdr=$(curl -sS -I -H "X-Forwarded-Proto: https" "${BASE_URL}/ghost/api/admin/site/" || true)
+  ver=$(printf "%s\n" "$hdr" | awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="content-version"{gsub(/\r/,"",$2);print $2}' | head -n1)
+  GHOST_API_VERSION="${ver:-v6.3}"
+  log "Accept-Version: ${GHOST_API_VERSION}"
+}
+
+# ---------------------------
+# Read Admin API Key from SQLite
+# ---------------------------
+read_admin_key_from_db() {
+  if ! db_exists; then
+    echo ""
+    return 1
+  fi
+  local row
+  row=$(sqlite3 "$DB_PATH" "
+    SELECT ak.id||':'||ak.secret
+    FROM api_keys ak
+    JOIN integrations i ON i.id = ak.integration_id
+    WHERE ak.type='admin' AND i.name='api'
+    ORDER BY ak.created_at DESC LIMIT 1;")
+  if [ -z "$row" ]; then
+    row=$(sqlite3 "$DB_PATH" "
+      SELECT ak.id||':'||ak.secret
+      FROM api_keys ak
+      WHERE ak.type='admin'
+      ORDER BY ak.created_at DESC LIMIT 1;")
+  fi
+  [ -z "$row" ] && return 1
+  printf "%s" "$row"
+}
+
+# ---------------------------
+# Generate JWT for Admin API
+# ---------------------------
 generate_jwt() {
-    local key=$1 id secret now exp header payload signature
-    IFS=':' read -r id secret <<< "$key"
-    
-    now=$(date +%s); exp=$((now+300))
-    
-    header=$(printf '{"alg":"HS256","typ":"JWT","kid":"%s"}' "$id" \
-        | openssl base64 -A | tr '/+' '_-' | tr -d '=')
-    payload=$(printf '{"iat":%s,"exp":%s,"aud":"/admin/"}' "$now" "$exp" \
-        | openssl base64 -A | tr '/+' '_-' | tr -d '=')
-    signature=$(printf '%s.%s' "$header" "$payload" \
-        | openssl dgst -sha256 -binary -mac HMAC -macopt hexkey:"$secret" \
-        | openssl base64 -A | tr '/+' '_-' | tr -d '=')
-    
-    JWT_TOKEN="${header}.${payload}.${signature}"
+  local key=$1 id secret now exp header payload signature
+  IFS=':' read -r id secret <<< "$key"
+  now=$(date +%s); exp=$((now+300))
+  header=$(printf '{"alg":"HS256","typ":"JWT","kid":"%s"}' "$id" | openssl base64 -A | tr '/+' '_-' | tr -d '=')
+  payload=$(printf '{"iat":%s,"exp":%s,"aud":"/admin/"}' "$now" "$exp" | openssl base64 -A | tr '/+' '_-' | tr -d '=')
+  signature=$(printf '%s.%s' "$header" "$payload" \
+    | openssl dgst -sha256 -binary -mac HMAC -macopt hexkey:"$secret" \
+    | openssl base64 -A | tr '/+' '_-' | tr -d '=')
+  JWT_TOKEN="${header}.${payload}.${signature}"
 }
 
-# ----------------------------------------------------------------------------
-# JWT-protected admin API calls
-# ----------------------------------------------------------------------------
 api_jwt() {
-    local method=$1 path=$2 body=${3:-}
-    curl -sSf \
-        -H "Authorization: Ghost ${JWT_TOKEN}" \
-        -H "Content-Type: application/json" \
-        -H "Accept-Version: ${GHOST_VERSION}" \
-        -H "User-Agent: ${UA}" \
-        -X "$method" \
-        ${body:+-d "$body"} \
-        "${BASE_URL}/ghost/api/admin${path}"
+  local method=$1 path=$2 body=${3:-}
+  curl -sSf \
+    -H "Authorization: Ghost ${JWT_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -H "Accept-Version: ${GHOST_API_VERSION}" \
+    -H "User-Agent: ${UA}" \
+    -X "$method" \
+    ${body:+-d "$body"} \
+    "${BASE_URL}/ghost/api/admin${path}"
 }
 
-# ----------------------------------------------------------------------------
-# One-time: Create integration via session + CSRF to get API key
-# ----------------------------------------------------------------------------
-create_integration_via_session() {
-    log "Creating integration via admin session (one-time)..."
-    local cookie hdr csrf payload resp
-    
-    cookie=$(mktemp -t ghost-cookie.XXXXXX)
-    hdr=$(mktemp -t ghost-hdr.XXXXXX)
-    
-    trap "rm -f '$cookie' '$hdr'" EXIT
-    
-    # Create admin session - korrigierter Endpoint
-    log "Attempting session login..."
-    curl -sS -D "$hdr" -c "$cookie" -b "$cookie" \
-        -H "Content-Type: application/json" \
-        -H "Accept-Version: ${GHOST_VERSION}" \
-        -H "User-Agent: ${UA}" \
-        -X POST \
-        -d "$(jq -nc --arg u "$GHOST_SETUP_EMAIL" --arg p "$GHOST_SETUP_PASSWORD" \
-            '{username:$u,password:$p}')" \
-        "${BASE_URL}/ghost/api/admin/session/" >/dev/null
-    
-    # Check if session was created successfully
-    session_code=$(awk 'NR==1{print $2}' "$hdr")
-    if [ "$session_code" != "201" ] && [ "$session_code" != "200" ]; then
-        log "Session creation failed with code: $session_code"
-        log "Trying alternative approach..."
-        
-        # Alternative: Direkt über Setup-Token falls verfügbar
-        return 1
-    fi
-    
-    # Extract CSRF token from response headers
-    log "Getting CSRF token..."
-    curl -sS -D "$hdr" -c "$cookie" -b "$cookie" \
-        -H "Accept-Version: ${GHOST_VERSION}" \
-        -H "User-Agent: ${UA}" \
-        "${BASE_URL}/ghost/api/admin/site/" >/dev/null
-    
-    csrf=$(awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="x-csrf-token"{gsub(/\r/,"",$2);print $2}' "$hdr" | head -n1)
-    if [ -z "$csrf" ]; then
-        log "CSRF token not received - trying cookie-based approach"
-        # Alternative: CSRF aus Cookie
-        csrf=$(awk -F'csrf=' '/Set-Cookie.*csrf=/{gsub(/;.*/,""); print $2}' "$hdr" | head -n1)
-    fi
-    
-    if [ -z "$csrf" ]; then
-        log "No CSRF token found"
-        return 1
-    fi
-    
-    log "CSRF token received: ${csrf:0:10}..."
-    
-    payload='{"integrations":[{"name":"Bootstrap Integration"}]}'
-    resp=$(curl -sS -D "$hdr" -c "$cookie" -b "$cookie" \
-        -H "Content-Type: application/json" \
-        -H "Accept-Version: ${GHOST_VERSION}" \
-        -H "User-Agent: ${UA}" \
-        -H "Origin: ${BASE_URL}" \
-        -H "X-CSRF-Token: ${csrf}" \
-        -X POST -d "$payload" \
-        "${BASE_URL}/ghost/api/admin/integrations/")
-    
-    if echo "$resp" | jq -e '.integrations[0]' >/dev/null 2>&1; then
-        # Return: JSON with admin_api_key and content_api_key
-        echo "$resp" | jq -r \
-            '.integrations[0]|{admin_api_key:(.api_keys[]|select(.type=="admin")|.secret),content_api_key:(.api_keys[]|select(.type=="content")|.secret)}'
-    else
-        log "Integration creation failed: $resp"
-        return 1
-    fi
+# ---------------------------
+# Theme: download, upload, activate
+# ---------------------------
+download_theme() {
+  curl -fsSL "$SPECTRE_ZIP_URL" -o "$SPECTRE_ZIP"
 }
 
-# ----------------------------------------------------------------------------  
-# Alternative: Create integration without session (direct API approach)
-# ----------------------------------------------------------------------------
-create_integration_direct() {
-    log "Attempting direct integration creation..."
-    
-    # Erst versuchen, ob bereits eine Integration existiert
-    local existing_integrations
-    existing_integrations=$(curl -sS \
-        -H "Accept-Version: ${GHOST_VERSION}" \
-        -H "User-Agent: ${UA}" \
-        "${BASE_URL}/ghost/api/admin/integrations/" 2>/dev/null || echo '{"integrations":[]}')
-    
-    local bootstrap_integration
-    bootstrap_integration=$(echo "$existing_integrations" | jq -r '.integrations[]? | select(.name=="Bootstrap Integration")')
-    
-    if [ -n "$bootstrap_integration" ] && [ "$bootstrap_integration" != "null" ]; then
-        log "Found existing Bootstrap Integration"
-        echo "$existing_integrations" | jq -r \
-            '.integrations[]|select(.name=="Bootstrap Integration")|{admin_api_key:(.api_keys[]|select(.type=="admin")|.secret),content_api_key:(.api_keys[]|select(.type=="content")|.secret)}'
-        return 0
-    fi
-    
-    return 1
+upload_theme() {
+  curl -sS \
+    -H "Authorization: Ghost ${JWT_TOKEN}" \
+    -H "Accept-Version: ${GHOST_API_VERSION}" \
+    -H "User-Agent: ${UA}" \
+    -F "file=@${SPECTRE_ZIP}" \
+    "${BASE_URL}/ghost/api/admin/themes/upload/"
 }
 
-# ----------------------------------------------------------------------------  
-# Via JWT: Check/create integration
-# ----------------------------------------------------------------------------
-create_or_get_integration() {
-    log "Checking/creating integration (JWT)..."
-    local list id resp
-    
-    list=$(api_jwt GET /integrations/?limit=all)
-    id=$(echo "$list" | jq -r '.integrations[]? | select(.name=="Bootstrap Integration")|.id')
-    
-    if [ -n "$id" ] && [ "$id" != "null" ]; then
-        echo "$list" | jq -r \
-            '.integrations[]|select(.name=="Bootstrap Integration")|{admin_api_key:(.api_keys[]|select(.type=="admin")|.secret),content_api_key:(.api_keys[]|select(.type=="content")|.secret)}'
-    else
-        resp=$(api_jwt POST /integrations/ "$(jq -nc --arg n "Bootstrap Integration" '{integrations:[{name:$n}]}')")
-        echo "$resp" | jq -r \
-            '.integrations[0]|{admin_api_key:(.api_keys[]|select(.type=="admin")|.secret),content_api_key:(.api_keys[]|select(.type=="content")|.secret)}'
-    fi
+activate_theme() {
+  local theme_name="$1"
+  api_jwt PUT "/themes/${theme_name}/activate/" '{}'
 }
 
-# ----------------------------------------------------------------------------
-# Persist and load API keys
-# ----------------------------------------------------------------------------
-persist_keys() {
-    local admin content
-    admin=$(echo "$1" | jq -r '.admin_api_key')
-    content=$(echo "$1" | jq -r '.content_api_key')
-    
-    mkdir -p "$(dirname "$KEYS_FILE")"
-    printf 'GHOST_ADMIN_API_KEY=%s\nGHOST_CONTENT_API_KEY=%s\n' "$admin" "$content" > "$KEYS_FILE"
-    log "Keys saved to $KEYS_FILE"
-}
-
-load_keys() {
-    if [ -f "$KEYS_FILE" ]; then
-        # shellcheck disable=SC1090
-        . "$KEYS_FILE"
-        if [ -n "${GHOST_ADMIN_API_KEY:-}" ]; then
-            generate_jwt "$GHOST_ADMIN_API_KEY"
-            log "JWT generated from saved keys."
-            return 0
-        fi
-    fi
-    return 1
-}
-
-# ----------------------------------------------------------------------------
-# Check if theme is already installed and active
-# ----------------------------------------------------------------------------
-check_theme_status() {
-    local themes active_theme
-    themes=$(api_jwt GET /themes/)
-    active_theme=$(echo "$themes" | jq -r '.themes[] | select(.active == true) | .name')
-    
-    if [ "$active_theme" = "spectre" ]; then
-        log "Spectre theme already active"
-        return 0
-    else
-        return 1
-    fi
-}
-
-# ----------------------------------------------------------------------------
-# Upload and activate theme via multipart form upload
-# ----------------------------------------------------------------------------
-upload_activate_theme() {
-    log "Downloading Spectre theme..."
-    if ! curl -fsSL "$SPECTRE_ZIP_URL" -o /tmp/spectre.zip; then
-        log "Failed to download theme"; exit 1
-    fi
-    
-    log "Uploading & activating theme..."
-    local theme_resp theme_name
-    
-    # Upload theme using multipart form data
-    theme_resp=$(curl -sS \
-        -H "Authorization: Ghost ${JWT_TOKEN}" \
-        -H "Accept-Version: ${GHOST_VERSION}" \
-        -H "User-Agent: ${UA}" \
-        -F "file=@/tmp/spectre.zip" \
-        "${BASE_URL}/ghost/api/admin/themes/upload/")
-    
-    theme_name=$(echo "$theme_resp" | jq -r '.themes[0].name')
-    if [ -z "$theme_name" ] || [ "$theme_name" = "null" ]; then
-        log "Theme upload failed: $theme_resp"
-        exit 1
-    fi
-    
-    # Activate the uploaded theme
-    api_jwt PUT "/themes/$theme_name/activate/" '{}' >/dev/null
-    log "Theme $theme_name activated successfully"
-    
-    rm -f /tmp/spectre.zip
-}
-
-# ----------------------------------------------------------------------------
-# Import routes via file upload (requires session authentication)
-# ----------------------------------------------------------------------------
-import_routes() {
-    if [ ! -f "$ROUTES_FILE" ]; then
-        log "Routes file not found: $ROUTES_FILE"
-        return
-    fi
-    
-    log "Importing routes..."
-    local cookie hdr csrf
-    
-    cookie=$(mktemp -t ghost-cookie.XXXXXX)
-    hdr=$(mktemp -t ghost-hdr.XXXXXX)
-    
-    trap "rm -f '$cookie' '$hdr'" EXIT
-    
-    # Create admin session
-    curl -sS -D "$hdr" -c "$cookie" -b "$cookie" \
-        -H "Content-Type: application/json" \
-        -H "Accept-Version: ${GHOST_VERSION}" \
-        -H "User-Agent: ${UA}" \
-        -X POST \
-        -d "$(jq -nc --arg u "$GHOST_SETUP_EMAIL" --arg p "$GHOST_SETUP_PASSWORD" \
-            '{username:$u,password:$p}')" \
-        "${BASE_URL}/ghost/api/admin/session/" >/dev/null
-    
-    # Get CSRF token
-    curl -sS -D "$hdr" -c "$cookie" -b "$cookie" \
-        -H "Accept-Version: ${GHOST_VERSION}" \
-        -H "User-Agent: ${UA}" \
-        "${BASE_URL}/ghost/api/admin/site/" >/dev/null
-    
-    csrf=$(awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="x-csrf-token"{gsub(/\r/,"",$2);print $2}' "$hdr" | head -n1)
-    
-    if [ -n "$csrf" ]; then
-        curl -sS -c "$cookie" -b "$cookie" \
-            -H "Accept-Version: ${GHOST_VERSION}" \
-            -H "User-Agent: ${UA}" \
-            -H "Origin: ${BASE_URL}" \
-            -H "X-CSRF-Token: ${csrf}" \
-            -F "routes=@${ROUTES_FILE}" \
-            "${BASE_URL}/ghost/api/admin/settings/routes/yaml/" >/dev/null
-        log "Routes imported successfully"
-    else
-        log "Could not get CSRF token for routes import"
-    fi
-}
-
-# ----------------------------------------------------------------------------
-# Set navigation via settings API
-# ----------------------------------------------------------------------------
+# ---------------------------
+# Navigation
+# ---------------------------
 set_navigation() {
-    log "Setting navigation..."
-    api_jwt PUT /settings/ '{
-        "settings":[
-            {"key":"navigation","value":[
-                {"label":"Start","url":"/"},
-                {"label":"Blog","url":"/blog/"},
-                {"label":"Presse","url":"/presse/"},
-                {"label":"Beispielseite","url":"/beispielseite/"}
-            ]},
-            {"key":"secondary_navigation","value":[
-                {"label":"Datenschutz","url":"/datenschutz/"},
-                {"label":"Impressum","url":"/impressum/"}
-            ]}
-        ]
-    }' >/dev/null
+  api_jwt PUT /settings/ '{
+    "settings":[
+      {"key":"navigation","value":[
+        {"label":"Start","url":"/"},
+        {"label":"Blog","url":"/blog/"},
+        {"label":"Presse","url":"/presse/"},
+        {"label":"Beispielseite","url":"/beispielseite/"}
+      ]},
+      {"key":"secondary_navigation","value":[
+        {"label":"Datenschutz","url":"/datenschutz/"},
+        {"label":"Impressum","url":"/impressum/"}
+      ]}
+    ]
+  }' >/dev/null
 }
 
-# ----------------------------------------------------------------------------
-# Create pages from HTML templates
-# ----------------------------------------------------------------------------
-create_pages() {
-    log "Creating pages..."
-    
-    for page in start impressum datenschutz presse beispielseite; do
-        local title html body existing_page
-        
-        case "$page" in
-            start) title="Start";;
-            impressum) title="Impressum";;
-            datenschutz) title="Datenschutzerklärung";;
-            presse) title="Presse";;
-            beispielseite) title="Beispielseite";;
-        esac
-        
-        html="/bootstrap/pages/${page}.html"
-        if [ ! -f "$html" ]; then
-            log "Page template not found: $html"
-            continue
-        fi
-        
-        # Check if page already exists
-        existing_page=$(api_jwt GET "/pages/slug/${page}/" 2>/dev/null || echo '{}')
-        if echo "$existing_page" | jq -e '.pages[0].id' >/dev/null; then
-            log "Page $page already exists, skipping"
-            continue
-        fi
-        
-        body=$(jq -nr \
-            --arg t "$title" \
-            --arg s "$page" \
-            --arg h "$(cat "$html" | sed ':a;N;$!ba;s/\n/\\n/g; s/"/\\"/g')" \
-            --arg e "$GHOST_SETUP_EMAIL" \
-            '{pages:[{title:$t,slug:$s,status:"published",html:$h,authors:[{email:$e}]}]}')
-        
-        if api_jwt POST /pages/ "$body" >/dev/null; then
-            log "Created page: $title"
-        else
-            log "Failed to create page: $title"
-        fi
-    done
+# ---------------------------
+# Helpers for content import
+# ---------------------------
+escape_html_file() {
+  sed ':a;N;$!ba;s/\n/\\n/g; s/"/\\"/g' "$1"
 }
 
-# ----------------------------------------------------------------------------
-# Create example posts from HTML templates
-# ----------------------------------------------------------------------------
-create_posts() {
-    log "Creating example posts..."
-    
-    # Example blog post
-    local post_html="/bootstrap/posts/beispiel-post.html"
-    if [ -f "$post_html" ]; then
-        # Check if post already exists
-        local existing_post=$(api_jwt GET "/posts/slug/beispiel-post/" 2>/dev/null || echo '{}')
-        if ! echo "$existing_post" | jq -e '.posts[0].id' >/dev/null; then
-            local post_body=$(jq -nr \
-                --arg h "$(cat "$post_html" | sed ':a;N;$!ba;s/\n/\\n/g; s/"/\\"/g')" \
-                --arg e "$GHOST_SETUP_EMAIL" \
-                '{posts:[{title:"Beispiel-Blogpost",slug:"beispiel-post",status:"published",html:$h,authors:[{email:$e}],tags:[]}]}')
-            
-            if api_jwt POST /posts/ "$post_body" >/dev/null; then
-                log "Created post: Beispiel-Blogpost"
-            else
-                log "Failed to create post: Beispiel-Blogpost"
-            fi
-        else
-            log "Post 'Beispiel-Blogpost' already exists, skipping"
-        fi
-    fi
-    
-    # Example press release
-    local press_html="/bootstrap/posts/beispiel-pressemitteilung.html"
-    if [ -f "$press_html" ]; then
-        # Check if post already exists
-        local existing_press=$(api_jwt GET "/posts/slug/beispiel-pressemitteilung/" 2>/dev/null || echo '{}')
-        if ! echo "$existing_press" | jq -e '.posts[0].id' >/dev/null; then
-            local press_body=$(jq -nr \
-                --arg h "$(cat "$press_html" | sed ':a;N;$!ba;s/\n/\\n/g; s/"/\\"/g')" \
-                --arg e "$GHOST_SETUP_EMAIL" \
-                '{posts:[{title:"Beispiel-Pressemitteilung",slug:"beispiel-pressemitteilung",status:"published",html:$h,authors:[{email:$e}],tags:[{name:"#pressemitteilung"}]}]}')
-            
-            if api_jwt POST /posts/ "$press_body" >/dev/null; then
-                log "Created post: Beispiel-Pressemitteilung"
-            else
-                log "Failed to create post: Beispiel-Pressemitteilung"
-            fi
-        else
-            log "Post 'Beispiel-Pressemitteilung' already exists, skipping"
-        fi
-    fi
+# Platzhalter-Ersetzungen in temporäre Dateien anwenden
+prepare_pages_with_substitutions() {
+  local year_now date_now
+  year_now=$(date '+%Y')
+  date_now=$(date '+%d.%m.%Y')
+
+  # Start
+  sed -e "s|\\[BLOGTITLE\\]|${GHOST_SETUP_BLOG_TITLE}|g" \
+    /bootstrap/pages/start.html > /tmp/start.html
+
+  # Impressum
+  sed -e "s|\\[Vorname Nachname\\]|${GHOST_SETUP_NAME}|g" \
+      -e "s|\\[EMAIL\\]|${GHOST_SETUP_EMAIL}|g" \
+      -e "s|\\[DOMAIN\\]|${DOMAIN}|g" \
+      -e "s|\\[JAHR\\]|${year_now}|g" \
+    /bootstrap/pages/impressum.html > /tmp/impressum.html
+
+  # Datenschutz
+  sed -e "s|\\[Vorname Nachname\\]|${GHOST_SETUP_NAME}|g" \
+      -e "s|\\[DATUM\\]|${date_now}|g" \
+    /bootstrap/pages/datenschutz.html > /tmp/datenschutz.html
+
+  # Presse
+  sed -e "s|\\[EMAIL\\]|${GHOST_SETUP_EMAIL}|g" \
+    /bootstrap/pages/presse.html > /tmp/presse.html
+
+  # Beispielseite
+  sed -e "s|\\[Vorname Nachname\\]|${GHOST_SETUP_NAME}|g" \
+    /bootstrap/pages/beispielseite.html > /tmp/beispielseite.html
+
+  # Pressemitteilung Post
+  sed -e "s|\\[EMAIL\\]|${GHOST_SETUP_EMAIL}|g" \
+    /bootstrap/posts/beispiel-pressemitteilung.html > /tmp/beispiel-pressemitteilung.html
 }
 
-# ----------------------------------------------------------------------------
-# Content bootstrap: Theme, Routes, Navigation, Pages, Posts
-# ----------------------------------------------------------------------------
-bootstrap_content() {
-    # Check if theme is already active
-    if ! check_theme_status; then
-        upload_activate_theme
-    fi
-    
-    import_routes
-    set_navigation
-    create_pages
-    create_posts
-    
-    log "Content bootstrap completed."
+create_page_if_missing() {
+  local slug="$1" title="$2" file="$3"
+  local body
+  body=$(jq -nr \
+    --arg t "$title" \
+    --arg s "$slug" \
+    --arg h "$(escape_html_file "$file")" \
+    --arg e "$GHOST_SETUP_EMAIL" \
+    '{pages:[{title:$t,slug:$s,status:"published",html:$h,authors:[{email:$e}]}]}')
+  api_jwt POST /pages/ "$body" >/dev/null || true
 }
 
-# ============================================================================
-# Main execution
-# ============================================================================
+create_post_if_missing() {
+  local slug="$1" title="$2" file="$3" tags_json="$4"
+  local body
+  body=$(jq -nr \
+    --arg t "$title" \
+    --arg s "$slug" \
+    --arg h "$(escape_html_file "$file")" \
+    --arg e "$GHOST_SETUP_EMAIL" \
+    --argjson tg "$tags_json" \
+    '{posts:[{title:$t,slug:$s,status:"published",html:$h,authors:[{email:$e}],tags:$tg}]}')
+  api_jwt POST /posts/ "$body" >/dev/null || true
+}
+
+# ---------------------------
+# Routes deploy
+# ---------------------------
+deploy_routes() {
+  mkdir -p "$(dirname "$ROUTES_DST")"
+  cp "$ROUTES_SRC" "$ROUTES_DST"
+}
+
+# ---------------------------
+# Integration cleanup
+# ---------------------------
+delete_bootstrap_integration() {
+  local iid
+  iid=$(sqlite3 "$DB_PATH" "
+    SELECT i.id
+    FROM integrations i
+    JOIN api_keys ak ON ak.integration_id = i.id
+    WHERE i.name='Bootstrap Integration'
+    ORDER BY i.created_at DESC LIMIT 1;")
+  [ -z "$iid" ] && { log "CLEANUP: Keine Bootstrap Integration gefunden."; return 0; }
+  api_jwt DELETE "/integrations/${iid}/" >/dev/null || {
+    log "CLEANUP: DELETE /integrations/${iid} fehlgeschlagen (ggf. bereits entfernt)."
+    return 0
+  }
+  log "CLEANUP: Bootstrap Integration gelöscht (id=${iid})."
+}
+
+# ---------------------------
+# MAIN
+# ---------------------------
 main() {
-    log "=== Starting Ghost Bootstrap ==="
-    
-    # 1) Perform setup if needed
-    if [ "$(setup_needed)" = "yes" ]; then
-        do_setup
-    else
-        log "Initial setup already completed."
-    fi
-    
-    # 2) Initialize JWT: Load keys or create integration one-time
-    if ! load_keys; then
-        local keys_json
-        
-        # Try different approaches to get API keys
-        if keys_json=$(create_integration_via_session); then
-            log "Integration created via session"
-        elif keys_json=$(create_integration_direct); then
-            log "Integration found via direct API"
-        else
-            log "Could not create or find integration"
-            exit 1
-        fi
-        
-        persist_keys "$keys_json"
-        GHOST_ADMIN_API_KEY=$(echo "$keys_json" | jq -r '.admin_api_key')
-        generate_jwt "$GHOST_ADMIN_API_KEY"
-    fi
-    
-    # 3) Supplement integration via JWT, refresh keys
-    local integ_json
-    integ_json=$(create_or_get_integration)
-    persist_keys "$integ_json"
-    
-    # 4) Content bootstrap
-    bootstrap_content
-    
-    log "=== Ghost Bootstrap Completed Successfully ==="
+  log "=== Ghost Bootstrap START ==="
+
+  if ! db_exists; then
+    log "Keine DB gefunden (${DB_PATH}). Installation noch nicht bereit. Beende ohne Fehler."
+    exit 0
+  fi
+
+  # Standard Retry-Limit (nicht erhöht)
+  log "Warte auf Ghost Admin Endpoint..."
+  retry 10 1 curl -fsS -H "X-Forwarded-Proto: https" "${BASE_URL}/ghost/api/admin/site/" >/dev/null
+
+  detect_api_version
+
+  local admin_key
+  admin_key=$(read_admin_key_from_db) || { log "ERROR: Kein Admin API Key in DB gefunden."; exit 1; }
+  generate_jwt "$admin_key"
+
+  # THEME
+  log "[THEME] Lade Theme ZIP..."
+  retry 3 1 download_theme
+
+  log "[THEME] Lade Theme in Ghost hoch..."
+  local theme_resp raw_name
+  theme_resp=$(retry 3 1 upload_theme || echo "")
+  if echo "${theme_resp}" | jq empty >/dev/null 2>&1; then
+    raw_name=$(echo "${theme_resp}" | jq -r '.themes[0].name // empty')
+  else
+    raw_name=""
+    log "[THEME] Upload-Antwort ist kein gültiges JSON (evtl. Proxy-/Fehlerseite)."
+  fi
+
+  if [ -n "${raw_name}" ]; then
+    log "[THEME] Aktiviere Theme: ${raw_name}"
+    retry 3 1 activate_theme "$raw_name"
+  else
+    log "[THEME] Kein Theme-Name aus der Upload-Antwort ermittelt (ggf. bereits vorhanden oder anderer Fehler)."
+  fi
+
+  # NAV
+  log "[NAV] Setze Navigation..."
+  retry 3 1 set_navigation
+
+  # PAGES/POSTS mit Ersetzungen
+  prepare_pages_with_substitutions
+
+  log "[PAGES] Erstelle statische Seiten..."
+  create_page_if_missing "start" "Start" "/tmp/start.html"
+  create_page_if_missing "impressum" "Impressum" "/tmp/impressum.html"
+  create_page_if_missing "datenschutz" "Datenschutzerklärung" "/tmp/datenschutz.html"
+  create_page_if_missing "presse" "Presse" "/tmp/presse.html"
+  create_page_if_missing "beispielseite" "Beispielseite" "/tmp/beispielseite.html"
+
+  log "[POSTS] Erstelle Beispiel-Posts..."
+  create_post_if_missing "beispiel-post" "Beispiel-Blogpost" "/bootstrap/posts/beispiel-post.html" "[]"
+  create_post_if_missing "beispiel-pressemitteilung" "Beispiel-Pressemitteilung" "/tmp/beispiel-pressemitteilung.html" '[{"name":"#pressemitteilung"}]'
+
+  # ROUTES
+  log "[ROUTES] Kopiere routes.yaml..."
+  deploy_routes
+
+  # CLEANUP INTEGRATION (optional, default true)
+  if [ "${BOOTSTRAP_CLEANUP_INTEGRATION:-true}" = "true" ]; then
+    log "[CLEANUP] Entferne Bootstrap Integration..."
+    delete_bootstrap_integration
+  fi
+
+  # TEMP CLEANUP
+  log "[CLEANUP] Entferne temporäre Dateien..."
+  rm -f "$SPECTRE_ZIP" || true
+  rm -f /tmp/start.html /tmp/impressum.html /tmp/datenschutz.html /tmp/presse.html /tmp/beispielseite.html /tmp/beispiel-pressemitteilung.html || true
+  rmdir "$TMP_DIR" 2>/dev/null || true
+
+  log "=== Ghost Bootstrap FINISHED ==="
 }
 
 main

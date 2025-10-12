@@ -1,9 +1,64 @@
 services:
+  # 1) Kopiert die vorbereitete DB einmalig vor dem ersten Ghost-Start
+  seed-db:
+    image: alpine:3.20
+    container_name: ${CONTAINER_NAME_PREFIX}-seed-db
+    command: >
+      sh -c '
+      set -e;
+      if [ ! -f /var/lib/ghost/content/data/ghost.db ]; then
+        echo "[seed-db] Kopiere initiale ghost.db...";
+        mkdir -p /var/lib/ghost/content/data &&
+        cp /bootstrap/ghost.db /var/lib/ghost/content/data/ghost.db &&
+        echo "[seed-db] ghost.db bereitgestellt.";
+      else
+        echo "[seed-db] ghost.db existiert bereits, überspringe.";
+      fi
+      '
+    volumes:
+      - ./bootstrap:/bootstrap:ro
+      - ./content:/var/lib/ghost/content
+    restart: "no"
+    networks:
+      - default
+
+  # 2) Redis (unverändert)
+  redis:
+    container_name: ${CONTAINER_NAME_PREFIX}-redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - ./redis:/data
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+      --tcp-backlog 128
+      --timeout 300
+      --tcp-keepalive 60
+      --databases 1
+      --hz 10
+      --loglevel warning
+      --client-output-buffer-limit "normal 0 0 0"
+      --stop-writes-on-bgsave-error no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 1s
+      retries: 3
+    networks:
+      - default
+
+  # 3) Ghost (Traefik-Labels und Umgebungen wie gehabt)
   ghost:
     container_name: ${CONTAINER_NAME_PREFIX}-ghost
     image: ghost:latest
     depends_on:
-      - redis
+      seed-db:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
     restart: unless-stopped
     env_file:
       - .env
@@ -65,7 +120,7 @@ services:
       start_period: 30s
     labels:
       - "traefik.enable=true"
-      # HTTP=>HTTPS redirect
+      # HTTP=>HTTPS Redirect
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`) && !PathPrefix(`/.ghost/activitypub/`) && !Path(`/.well-known/webfinger`) && !Path(`/.well-known/nodeinfo`)"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.entrypoints=http"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.service=${CONTAINER_NAME_PREFIX}-ghost"
@@ -92,61 +147,82 @@ services:
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.tls.certresolver=http"
       - "traefik.docker.network=proxy"
 
+  # 4) Bootstrap: Erkennt DB-Zustand; richtet bei vorhandener DB alles via Admin-API ein
   ghost-bootstrap:
     container_name: ${CONTAINER_NAME_PREFIX}-bootstrap
     build:
       context: ./bootstrap
       dockerfile: Dockerfile
     image: ${CONTAINER_NAME_PREFIX}/ghost-bootstrap:latest
-    restart: "no"
     env_file:
       - .env
     volumes:
+      - ./bootstrap:/bootstrap:ro
       - ./content:/var/lib/ghost/content
       - ./config.production.json:/var/lib/ghost/config.production.json:ro
-      - ./bootstrap/routes.yaml:/bootstrap/routes.yaml:ro
-      - ./bootstrap/pages:/bootstrap/pages:ro
-      - ./bootstrap/posts:/bootstrap/posts:ro
-      - ./bootstrap:/bootstrap
     depends_on:
       ghost:
         condition: service_healthy
+    restart: "no"
     networks:
       - default
       - proxy
 
-  redis:
-    container_name: ${CONTAINER_NAME_PREFIX}-redis
-    image: redis:7-alpine
-    restart: unless-stopped
+  # 5) Restart-Helper (Sidecar) ohne Docker-Socket/Health:
+  #    Erkennt routes.yaml und triggert minimalen GET auf /ghost/api/admin/settings/
+  restart-helper:
+    image: alpine:3.20
+    container_name: ${CONTAINER_NAME_PREFIX}-restart-helper
+    command: >
+      sh -c '
+      set -e;
+      echo "[restart-helper] Warte auf routes.yaml...";
+      while [ ! -f /var/lib/ghost/content/settings/routes.yaml ]; do
+        sleep 2;
+      done;
+      echo "[restart-helper] routes.yaml erkannt. Sende minimalen GET an /ghost/api/admin/settings/ ...";
+      i=0; ok=0;
+      while [ $i -lt 5 ]; do
+        if wget -qO- http://ghost:2368/ghost/api/admin/settings/ >/dev/null 2>&1; then
+          ok=1; break;
+        fi;
+        sleep 2; i=$((i+1));
+      done;
+      if [ $ok -eq 1 ]; then
+        echo "[restart-helper] GET erfolgreich gesendet (keine Reload-Garantie).";
+      else
+        echo "[restart-helper] GET fehlgeschlagen (weiter ohne Reload).";
+      fi;
+      # Änderungen erkennen und erneut GET senden
+      while true; do
+        if [ -f /var/lib/ghost/content/settings/routes.yaml ]; then
+          # grobe Änderungserkennung über mtime
+          TS_CUR=$(stat -c %Y /var/lib/ghost/content/settings/routes.yaml 2>/dev/null || echo 0);
+          if [ "${TS_LAST:-0}" != "$TS_CUR" ]; then
+            TS_LAST="$TS_CUR";
+            echo "[restart-helper] Änderung an routes.yaml erkannt. Sende erneuten GET ...";
+            wget -qO- http://ghost:2368/ghost/api/admin/settings/ >/dev/null 2>&1 || true;
+          fi;
+        fi;
+        sleep 3;
+      done
+      '
     volumes:
-      - ./redis:/data
+      - ./content:/var/lib/ghost/content
+    depends_on:
+      ghost:
+        condition: service_started
+    restart: unless-stopped
     networks:
       - default
-    command: >
-      redis-server
-      --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
-      --save ""
-      --tcp-backlog 128
-      --timeout 300
-      --tcp-keepalive 60
-      --databases 1
-      --hz 10
-      --loglevel warning
-      --client-output-buffer-limit "normal 0 0 0"
-      --stop-writes-on-bgsave-error no
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 1s
-      retries: 3
 
+  # 6) Proxy (unverändert)
   proxy:
     container_name: ${CONTAINER_NAME_PREFIX}-proxy
     image: nginx:alpine
     depends_on:
-      - ghost
+      ghost:
+        condition: service_started
     restart: unless-stopped
     volumes:
       - ./nginx-proxy.conf:/etc/nginx/nginx.conf:ro

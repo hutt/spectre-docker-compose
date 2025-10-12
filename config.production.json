@@ -1,4 +1,9 @@
 {
+  "url": "https://DOMAIN_WIRD_UEBER_ENV_GESETZT",
+  "server": {
+    "host": "::",
+    "port": 2368
+  },
   "logging": {
     "transports": ["file", "stdout"]
   },

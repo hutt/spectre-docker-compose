@@ -1,8 +1,17 @@
 FROM alpine:3.20
 
-RUN apk add --no-cache bash curl jq unzip ca-certificates coreutils openssl
+# Systempakete in einem Layer für schnellere Rebuilds
+RUN apk add --no-cache \
+    bash \
+    curl \
+    jq \
+    unzip \
+    ca-certificates \
+    coreutils \
+    openssl \
+    sqlite
 
-# Bootstrap-Script ins Image
+# bootstrap.sh in separatem Layer, damit nur dieser Layer bei Änderungen neu gebaut wird
 COPY bootstrap.sh /usr/local/bin/bootstrap.sh
 RUN chmod +x /usr/local/bin/bootstrap.sh
 
