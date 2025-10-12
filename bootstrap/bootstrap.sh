@@ -164,13 +164,15 @@ do_setup() {
   log "Führe Initial-Setup durch ..."
   local payload
   payload=$(jq -n --arg n "${GHOST_SETUP_NAME}" \
-                 --arg e "${GHOST_SETUP_EMAIL}" \
-                 --arg p "${GHOST_SETUP_PASSWORD}" \
-                 --arg t "${GHOST_SETUP_BLOG_TITLE}" \
-                 '{setup:[{name:$n,email:$e,password:$p,blogTitle:$t}]}')
+                  --arg e "${GHOST_SETUP_EMAIL}" \
+                  --arg p "${GHOST_SETUP_PASSWORD}" \
+                  --arg t "${GHOST_SETUP_BLOG_TITLE}" \
+                  '{setup:[{name:$n,email:$e,password:$p,blogTitle:$t}]}')
+  # Nur fürs Logging maskieren, aber nicht senden:
+  log "Setup-Payload (maskiert): $(echo "${payload}" | mask)"
   local code
-  code=$(curl_json "POST" "${BASE_URL}/ghost/api/admin/authentication/setup/" "$(echo "${payload}" | mask)")
-  # 201 = Setup ok, 403 = bereits durchgeführt
+  # Roh-Payload senden
+  code=$(curl_json "POST" "${BASE_URL}/ghost/api/admin/authentication/setup/" "${payload}")
   if [ "${code}" = "201" ]; then
     log "Setup abgeschlossen."
   elif [ "${code}" = "403" ]; then
