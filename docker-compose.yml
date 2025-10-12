@@ -97,13 +97,8 @@ services:
       context: ./bootstrap
     image: hutt/ghost-spectre:latest
     restart: "no"
-    environment:
-      DOMAIN: ${DOMAIN}
-      GHOST_SETUP_NAME: ${GHOST_SETUP_NAME}
-      GHOST_SETUP_EMAIL: ${GHOST_SETUP_EMAIL}
-      GHOST_SETUP_PASSWORD: ${GHOST_SETUP_PASSWORD}
-      GHOST_SETUP_BLOG_TITLE: ${GHOST_SETUP_BLOG_TITLE}
-      SPECTRE_ZIP_URL: ${SPECTRE_ZIP_URL}
+    env_file:
+      - .env
     volumes:
       - ./routes.yaml:/bootstrap/routes.yaml:ro
       - ./bootstrap/pages:/bootstrap/pages:ro
