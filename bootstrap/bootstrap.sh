@@ -98,7 +98,7 @@ get_csrf() {
   
   # Mehrere Versuche mit verschiedenen Endpoints
   # 1. Versuch: /site/
-  curl -s -D "$headers" -o /dev/null \
+  curl -s -L -D "$headers" -o /dev/null \
        -c "$COOKIE" -b "$COOKIE" \
        -H "Accept: application/json" \
        -H "User-Agent: $UA" \
