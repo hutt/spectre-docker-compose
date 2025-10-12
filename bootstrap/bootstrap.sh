@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================
-# Ghost Bootstrap – Auto-Install, idempotent (Staff-Token only)
+# Ghost Bootstrap – Erst-Setup nur mit first_setup (Staff-Token only)
 # ============================================
 
 # Required ENV:
@@ -11,12 +11,9 @@ set -euo pipefail
 # - GHOST_SETUP_EMAIL
 # - GHOST_SETUP_NAME
 # - GHOST_SETUP_BLOG_TITLE
-# Optional:
-# - BOOTSTRAP_CLEANUP_INTEGRATION=true|false (hat hier keine Wirkung mehr, da keine Integration genutzt wird)
 
 BASE_URL="https://${DOMAIN}"
-UA="Ghost-Bootstrap/2.0"
-DB_PATH="/var/lib/ghost/content/data/ghost.db"
+UA="Ghost-Bootstrap/2.4"
 ROUTES_SRC="/bootstrap/routes.yaml"
 ROUTES_DST="/var/lib/ghost/content/settings/routes.yaml"
 TMP_DIR="/tmp/ghost-bootstrap"
@@ -27,26 +24,6 @@ mkdir -p "${TMP_DIR}"
 
 log() {
   printf '%s %s\n' "$(date +'%F %T')" "$*" >&2
-}
-
-# Staff Access Token aus first_setup einlesen (falls vorhanden)
-STAFF_ACCESS_TOKEN=""
-if [ -f "${FIRST_SETUP_FILE}" ]; then
-  STAFF_ACCESS_TOKEN="$(tr -d ' \n\r' <"${FIRST_SETUP_FILE}" || true)"
-  if [ -n "${STAFF_ACCESS_TOKEN}" ]; then
-    log "STAFF_ACCESS_TOKEN aus ${FIRST_SETUP_FILE} geladen."
-  else
-    log "Warnung: ${FIRST_SETUP_FILE} ist leer – STAFF_ACCESS_TOKEN nicht gesetzt."
-  fi
-else
-  log "Hinweis: ${FIRST_SETUP_FILE} nicht gefunden – STAFF_ACCESS_TOKEN nicht gesetzt."
-fi
-
-require_staff_token() {
-  if [ -z "${STAFF_ACCESS_TOKEN}" ]; then
-    log "ERROR: Kein STAFF_ACCESS_TOKEN verfügbar. Vorgang kann nicht fortgesetzt werden."
-    exit 1
-  fi
 }
 
 # ---------------------------
@@ -74,13 +51,6 @@ retry() {
 }
 
 # ---------------------------
-# DB exist check
-# ---------------------------
-db_exists() {
-  [ -s "$DB_PATH" ]
-}
-
-# ---------------------------
 # Detect Ghost API Version
 # ---------------------------
 detect_api_version() {
@@ -94,6 +64,15 @@ detect_api_version() {
 # ---------------------------
 # Admin API caller (Staff Token only)
 # ---------------------------
+STAFF_ACCESS_TOKEN=""
+
+require_staff_token() {
+  if [ -z "${STAFF_ACCESS_TOKEN}" ]; then
+    log "ERROR: Kein STAFF_ACCESS_TOKEN verfügbar. Vorgang kann nicht fortgesetzt werden."
+    exit 1
+  fi
+}
+
 api_admin() {
   local method=$1 path=$2 body=${3:-}
   require_staff_token
@@ -105,6 +84,33 @@ api_admin() {
     -X "$method" \
     ${body:+-d "$body"} \
     "${BASE_URL}/ghost/api/admin${path}"
+}
+
+# ---------------------------
+# User lookup helpers
+# ---------------------------
+get_user_id_by_email() {
+  local email="$1"
+  local res uid
+  res=$(api_admin GET "/users/?filter=email:${email}&limit=1") || return 1
+  uid=$(echo "$res" | jq -r '.users[0].id // empty')
+  if [ -z "$uid" ]; then
+    log "ERROR: Kein User mit E-Mail ${email} gefunden."
+    return 1
+  fi
+  echo "$uid"
+}
+
+get_user_id_by_slug() {
+  local slug="$1"
+  local res uid
+  res=$(api_admin GET "/users/?filter=slug:${slug}&limit=1") || return 1
+  uid=$(echo "$res" | jq -r '.users[0].id // empty')
+  if [ -z "$uid" ]; then
+    log "ERROR: Kein User mit Slug ${slug} gefunden."
+    return 1
+  fi
+  echo "$uid"
 }
 
 # ---------------------------
@@ -146,16 +152,20 @@ set_navigation() {
         {"label":"Impressum","url":"/impressum/"}
       ]}
     ]
-  }' >/dev/null
+  }'
 }
 
 # ---------------------------
-# Helpers for content import
+# HTML → JSON-string Helper
 # ---------------------------
-escape_html_file() {
-  sed ':a;N;$!ba;s/\n/\\n/g; s/"/\\"/g' "$1"
+file_to_json_string() {
+  # gibt einen JSON-String (inkl. Quotes) auf stdout
+  jq -Rs . < "$1"
 }
 
+# ---------------------------
+# Prepare HTML pages/posts (sed replaces)
+# ---------------------------
 prepare_pages_with_substitutions() {
   local year_now date_now
   year_now=$(date '+%Y')
@@ -184,28 +194,52 @@ prepare_pages_with_substitutions() {
     /bootstrap/posts/beispiel-pressemitteilung.html > /tmp/beispiel-pressemitteilung.html
 }
 
+# ---------------------------
+# Create pages/posts with actor + escaped HTML
+# ---------------------------
 create_page_if_missing() {
-  local slug="$1" title="$2" file="$3"
-  local body
+  local slug="$1" title="$2" file="$3" author_id="$4"
+  local html_json body
+  html_json=$(file_to_json_string "$file")
   body=$(jq -nr \
     --arg t "$title" \
     --arg s "$slug" \
-    --arg h "$(escape_html_file "$file")" \
-    --arg e "$GHOST_SETUP_EMAIL" \
-    '{pages:[{title:$t,slug:$s,status:"published",html:$h,authors:[{email:$e}]}]}')
+    --arg a "$author_id" \
+    --argjson h "$html_json" \
+    '{
+      pages:[{
+        title:$t,
+        slug:$s,
+        status:"published",
+        html:$h,
+        authors:[{id:$a}]
+      }]
+    }')
+  log "create_page_if_missing(): $body"
   api_admin POST /pages/ "$body" >/dev/null || true
 }
 
 create_post_if_missing() {
-  local slug="$1" title="$2" file="$3" tags_json="$4"
-  local body
+  local slug="$1" title="$2" file="$3" tags_json="$4" author_id="$5"
+  local html_json body
+  html_json=$(file_to_json_string "$file")
   body=$(jq -nr \
     --arg t "$title" \
     --arg s "$slug" \
-    --arg h "$(escape_html_file "$file")" \
-    --arg e "$GHOST_SETUP_EMAIL" \
+    --arg a "$author_id" \
     --argjson tg "$tags_json" \
-    '{posts:[{title:$t,slug:$s,status:"published",html:$h,authors:[{email:$e}],tags:$tg}]}')
+    --argjson h "$html_json" \
+    '{
+      posts:[{
+        title:$t,
+        slug:$s,
+        status:"published",
+        html:$h,
+        authors:[{id:$a}],
+        tags:$tg
+      }]
+    }')
+  log "create_post_if_missing(): $body"
   api_admin POST /posts/ "$body" >/dev/null || true
 }
 
@@ -256,21 +290,32 @@ delete_first_setup_file() {
 main() {
   log "=== Ghost Bootstrap START ==="
 
-  # Early exit if DB missing
-  if ! db_exists; then
-    log "Keine DB gefunden (${DB_PATH}). Installation noch nicht bereit. Beende ohne Fehler."
+  # Erst-Setup nur, wenn first_setup existiert
+  if [ ! -f "${FIRST_SETUP_FILE}" ]; then
+    log "first_setup fehlt – kein Erst-Setup erforderlich. Beende ohne Fehler."
     exit 0
   fi
 
-  # Wait for Ghost admin site endpoint
+  # STAFF TOKEN laden
+  STAFF_ACCESS_TOKEN="$(tr -d ' \n\r' <"${FIRST_SETUP_FILE}" || true)"
+  if [ -z "${STAFF_ACCESS_TOKEN}" ]; then
+    log "ERROR: ${FIRST_SETUP_FILE} ist leer – kein STAFF_ACCESS_TOKEN verfügbar."
+    exit 1
+  fi
+
+  # Warte auf Ghost Admin endpoint
   log "Warte auf Ghost Admin Endpoint..."
   retry 10 1 curl -fsS -H "X-Forwarded-Proto: https" "${BASE_URL}/ghost/api/admin/site/" >/dev/null
 
   detect_api_version
-
-  # Auth erzwingen (Staff only)
-  require_staff_token
   log "Auth-Modus: STAFF Access Token"
+
+  # Actor-IDs bestimmen
+  log "[ACTOR] Ermittle User-ID für slug superuser..."
+  SUPERUSER_ID="$(get_user_id_by_slug "superuser")" || { log "ERROR: superuser-ID konnte nicht ermittelt werden."; exit 1; }
+
+  log "[AUTHOR] Ermittle Autor-ID für ${GHOST_SETUP_EMAIL}..."
+  AUTHOR_ID="$(get_user_id_by_email "${GHOST_SETUP_EMAIL}")" || { log "ERROR: Autor-ID konnte nicht ermittelt werden."; exit 1; }
 
   # THEME
   log "[THEME] Lade Theme ZIP..."
@@ -293,9 +338,39 @@ main() {
     log "[THEME] Kein Theme-Name aus der Upload-Antwort ermittelt (ggf. bereits vorhanden oder anderer Fehler)."
   fi
 
-  # NAV (Staff)
+  # NAV
   log "[NAV] Setze Navigation..."
   retry 3 1 set_navigation
 
-  # PAGES/POSTS
-  prepare_pages
+  # PAGES/POSTS mit Platzhalter-Ersetzungen
+  prepare_pages_with_substitutions
+
+  log "[PAGES] Erstelle statische Seiten..."
+  create_page_if_missing "start" "Start" "/tmp/start.html" "${AUTHOR_ID}"
+  create_page_if_missing "impressum" "Impressum" "/tmp/impressum.html" "${AUTHOR_ID}"
+  create_page_if_missing "datenschutz" "Datenschutzerklärung" "/tmp/datenschutz.html" "${AUTHOR_ID}"
+  create_page_if_missing "presse" "Presse" "/tmp/presse.html" "${AUTHOR_ID}"
+  create_page_if_missing "beispielseite" "Beispielseite" "/tmp/beispielseite.html" "${AUTHOR_ID}"
+
+  log "[POSTS] Erstelle Beispiel-Posts..."
+  create_post_if_missing "beispiel-post" "Beispiel-Blogpost" "/bootstrap/posts/beispiel-post.html" "[]" "${AUTHOR_ID}"
+  create_post_if_missing "beispiel-pressemitteilung" "Beispiel-Pressemitteilung" "/tmp/beispiel-pressemitteilung.html" '[{"name":"#pressemitteilung"}]' "${AUTHOR_ID}"
+
+  # ROUTES
+  log "[ROUTES] Kopiere routes.yaml..."
+  deploy_routes
+
+  # CLEANUP: Superuser und first_setup entfernen
+  delete_superuser || log "CLEANUP: Superuser-Löschung schlug fehl."
+  delete_first_setup_file || log "CLEANUP: first_setup-Datei-Löschung schlug fehl."
+
+  # TEMP CLEANUP
+  log "[CLEANUP] Entferne temporäre Dateien..."
+  rm -f "$SPECTRE_ZIP" || true
+  rm -f /tmp/start.html /tmp/impressum.html /tmp/datenschutz.html /tmp/presse.html /tmp/beispielseite.html /tmp/beispiel-pressemitteilung.html || true
+  rmdir "$TMP_DIR" 2>/dev/null || true
+
+  log "=== Ghost Bootstrap FINISHED ==="
+}
+
+main
