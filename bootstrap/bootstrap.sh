@@ -6,6 +6,7 @@ BASE_URL="${GHOST_ADMIN_URL:-http://ghost:2368}"
 
 COOKIE="$(mktemp)"
 ROUTES_FILE="/bootstrap/routes.yaml"
+GENERATED_KEYS_FILE="/bootstrap/generated.keys.env"
 UA="Mozilla/5.0 (compatible; Ghost-Bootstrap/1.0)"
 
 log() { printf '%s %s\n' "$(date +'%F %T')" "$*" >&2; }
@@ -15,7 +16,8 @@ log() { printf '%s %s\n' "$(date +'%F %T')" "$*" >&2; }
 wait_for_ghost() {
   log "Warte auf Ghost unter ${BASE_URL} ..."
   for i in $(seq 1 120); do
-    if curl -sf -c "$COOKIE" -b "$COOKIE" -H "Accept: application/json" -H "User-Agent: $UA" \
+    if curl -sf -c "$COOKIE" -b "$COOKIE" \
+         -H "Accept: application/json" -H "User-Agent: $UA" \
          "${BASE_URL}/ghost/api/admin/site/" >/dev/null; then
       log "Ghost erreichbar."
       return 0
@@ -26,61 +28,36 @@ wait_for_ghost() {
   exit 1
 }
 
-# Session-Login mit E-Mail/Passwort (Ghost 6+)
-login_session() {
-  log "Melde Session an ..."
-  # Erst einmal /site aufrufen, einige Setups wollen das vorab
-  curl -s -o /dev/null -w "%{http_code}" \
-       -c "$COOKIE" -b "$COOKIE" \
-       -H "Accept: application/json" -H "User-Agent: $UA" \
-       "${BASE_URL}/ghost/api/admin/site/" >/dev/null || true
-
-  # Session erstellen
-  local code body
-  body=$(jq -n --arg e "$GHOST_SETUP_EMAIL" --arg p "$GHOST_SETUP_PASSWORD" '{username:$e,password:$p}')
-  code=$(curl -s -o /tmp/login.json -w "%{http_code}" \
-              -c "$COOKIE" -b "$COOKIE" \
-              -H "Content-Type: application/json" \
-              -H "Origin: ${BASE_URL}" \
-              -H "User-Agent: $UA" \
-              -X POST \
-              -d "$body" \
-              "${BASE_URL}/ghost/api/admin/session/")
-  if [ "$code" != "201" ] && [ "$code" != "204" ]; then
-    log "Session-Login fehlgeschlagen (HTTP $code). Antwort:"
-    cat /tmp/login.json >&2 || true
-    exit 1
-  fi
-  log "Session erstellt."
-}
-
-# CSRF-Token aus Header beziehen
+# CSRF-Token aus Response-Headern ziehen (Ghost 6+ setzt X-CSRF-Token im Header)
 get_csrf() {
   log "Hole CSRF-Token ..."
-  # Der CSRF-Token kommt bei Ghost über den Response-Header "X-CSRF-Token"
-  # Wir triggern eine einfache GET-Anfrage, um den Header zu erhalten
-  local headers
-  headers=$(mktemp)
+  local headers token
+  headers="$(mktemp)"
+
+  # 1) /site anfragen
   curl -s -D "$headers" -o /dev/null \
        -c "$COOKIE" -b "$COOKIE" \
        -H "Accept: application/json" \
        -H "User-Agent: $UA" \
        "${BASE_URL}/ghost/api/admin/site/"
-  local token
-  token=$(awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="x-csrf-token"{gsub(/\r/,"",$2);print $2}' "$headers" || true)
+
+  token="$(awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="x-csrf-token"{gsub(/\r/,"",$2);print $2}' "$headers" || true)"
+
+  # 2) Fallback: /users/me
   if [ -z "${token:-}" ]; then
-    # Fallback: versuche denselben Request noch einmal gegen /users/me
-    curl -s -D "$headers" -o /dev/null \
+    curl -s -D "$headers" -o /devnull \
          -c "$COOKIE" -b "$COOKIE" \
          -H "Accept: application/json" \
          -H "User-Agent: $UA" \
-         "${BASE_URL}/ghost/api/admin/users/me/"
-    token=$(awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="x-csrf-token"{gsub(/\r/,"",$2);print $2}' "$headers" || true)
+         "${BASE_URL}/ghost/api/admin/users/me/" || true
+    token="$(awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="x-csrf-token"{gsub(/\r/,"",$2);print $2}' "$headers" || true)"
   fi
+
   if [ -z "${token:-}" ]; then
     log "Kein CSRF-Token im Header gefunden."
     exit 1
   fi
+
   echo "$token"
 }
 
@@ -122,17 +99,141 @@ download_theme() {
   curl -fsSL "$url" -o /tmp/spectre.zip
 }
 
-upload_theme() {
-  local csrf="$1"
-  log "Lade Theme zu Ghost hoch ..."
-  curl -s -c "$COOKIE" -b "$COOKIE" \
+# Integration anlegen (oder vorhandene holen) und Admin-/Content-Keys extrahieren
+create_or_get_integration() {
+  local csrf="$1" name="${2:-Bootstrap Integration}"
+
+  # Bestehende Integrationen lesen
+  local existing id
+  existing=$(curl -s -c "$COOKIE" -b "$COOKIE" \
+    -H "Accept: application/json" \
+    -H "User-Agent: $UA" \
+    "${BASE_URL}/ghost/api/admin/integrations/?limit=all" || true)
+
+  id=$(echo "$existing" | jq -r --arg n "$name" '.integrations[]? | select(.name==$n) | .id' 2>/dev/null || true)
+
+  if [ -n "${id:-}" ] && [ "$id" != "null" ]; then
+    log "Integration '$name' existiert bereits (id=$id)."
+    echo "$existing" | jq -r --arg n "$name" '
+      .integrations[] | select(.name==$n) |
+      {
+        name, id,
+        admin_api_key: (.api_keys[]? | select(.type=="admin") | .secret),
+        content_api_key: (.api_keys[]? | select(.type=="content") | .secret)
+      }'
+    return 0
+  fi
+
+  log "Erstelle Integration '$name' …"
+  local resp
+  resp=$(curl -s -c "$COOKIE" -b "$COOKIE" \
+    -H "Content-Type: application/json" \
     -H "Origin: ${BASE_URL}" \
     -H "X-CSRF-Token: ${csrf}" \
     -H "User-Agent: $UA" \
-    -F "file=@/tmp/spectre.zip" \
-    "${BASE_URL}/ghost/api/admin/themes/upload/" \
-  | tee /tmp/theme-upload.json >/dev/null
+    -X POST \
+    -d "$(jq -n --arg n "$name" '{integrations:[{name:$n}]}')" \
+    "${BASE_URL}/ghost/api/admin/integrations/")
 
+  echo "$resp" | jq -r '
+    .integrations[0] |
+    {
+      name, id,
+      admin_api_key: (.api_keys[]? | select(.type=="admin") | .secret),
+      content_api_key: (.api_keys[]? | select(.type=="content") | .secret)
+    }'
+}
+
+persist_keys() {
+  local json="$1" out="${2:-$GENERATED_KEYS_FILE}"
+  local ADMIN_KEY CONTENT_KEY
+  ADMIN_KEY=$(echo "$json" | jq -r '.admin_api_key // empty')
+  CONTENT_KEY=$(echo "$json" | jq -r '.content_api_key // empty')
+  [ -z "$ADMIN_KEY" ] && { log "Kein Admin API Key in Antwort gefunden."; return 1; }
+  mkdir -p "$(dirname "$out")"
+  {
+    echo "# generated by bootstrap $(date -Iseconds)"
+    echo "GHOST_ADMIN_API_KEY=$ADMIN_KEY"
+    echo "GHOST_CONTENT_API_KEY=$CONTENT_KEY"
+  } > "$out"
+  log "API-Keys gespeichert unter $out"
+}
+
+load_generated_keys() {
+  if [ -f "$GENERATED_KEYS_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$GENERATED_KEYS_FILE"
+    export GHOST_ADMIN_API_KEY="${GHOST_ADMIN_API_KEY:-}"
+    export GHOST_CONTENT_API_KEY="${GHOST_CONTENT_API_KEY:-}"
+    if [ -n "${GHOST_ADMIN_API_KEY:-}" ]; then
+      log "Geladener Admin API Key aus ${GENERATED_KEYS_FILE}."
+    fi
+  fi
+}
+
+# Wrapper für Admin-API-Aufruf mit API-Key (bevorzugt) oder Cookie+CSRF
+# Nutzung: api_with_auth "<METHOD>" "<PATH>" "<JSON_BODY|empty>" "<CSRF|empty>" "<IS_MULTIPART:true|false>"
+api_with_auth() {
+  local method="$1" path="$2" body="${3:-}" csrf="${4:-}" is_multipart="${5:-false}"
+  local url="${BASE_URL}${path}"
+
+  if [ -n "${GHOST_ADMIN_API_KEY:-}" ]; then
+    # Auth via Admin API Key
+    if [ "$is_multipart" = "true" ]; then
+      # body muss bereits aus -F Parametern bestehen; hier übernehmen wir nur Header
+      curl -s \
+        -H "Authorization: Ghost ${GHOST_ADMIN_API_KEY}" \
+        -H "User-Agent: $UA" \
+        -X "$method" \
+        $body \
+        "$url"
+    else
+      curl -s \
+        -H "Authorization: Ghost ${GHOST_ADMIN_API_KEY}" \
+        -H "Content-Type: application/json" \
+        -H "User-Agent: $UA" \
+        -X "$method" \
+        ${body:+-d "$body"} \
+        "$url"
+    fi
+  else
+    # Fallback: Cookie + CSRF (nur direkt nach Setup verlässlich)
+    if [ "$is_multipart" = "true" ]; then
+      curl -s -c "$COOKIE" -b "$COOKIE" \
+        -H "Origin: ${BASE_URL}" \
+        -H "X-CSRF-Token: ${csrf}" \
+        -H "User-Agent: $UA" \
+        -X "$method" \
+        $body \
+        "$url"
+    else
+      curl -s -c "$COOKIE" -b "$COOKIE" \
+        -H "Content-Type: application/json" \
+        -H "Origin: ${BASE_URL}" \
+        -H "X-CSRF-Token: ${csrf}" \
+        -H "User-Agent: $UA" \
+        -X "$method" \
+        ${body:+-d "$body"} \
+        "$url"
+    fi
+  fi
+}
+
+upload_theme() {
+  local csrf="$1"
+  log "Lade Theme zu Ghost hoch ..."
+  local resp
+  if [ -n "${GHOST_ADMIN_API_KEY:-}" ]; then
+    # Mit Admin-Key, multipart
+    resp=$(api_with_auth "POST" "/ghost/api/admin/themes/upload/" \
+           "-F file=@/tmp/spectre.zip" "" "true")
+  else
+    # Mit Cookie+CSRF, multipart
+    resp=$(api_with_auth "POST" "/ghost/api/admin/themes/upload/" \
+           "-F file=@/tmp/spectre.zip" "$csrf" "true")
+  fi
+
+  echo "$resp" | tee /tmp/theme-upload.json >/dev/null
   if ! jq -e '.themes and .themes[0].name' /tmp/theme-upload.json >/dev/null 2>&1; then
     log "Theme-Upload fehlgeschlagen. Antwort:"
     cat /tmp/theme-upload.json >&2 || true
@@ -142,51 +243,58 @@ upload_theme() {
 }
 
 activate_theme() {
-  local csrf="$1"
-  local name="$2"
+  local csrf="$1" name="$2"
   log "Aktiviere Theme: ${name}"
-  curl -s -c "$COOKIE" -b "$COOKIE" \
-    -H "Origin: ${BASE_URL}" \
-    -H "X-CSRF-Token: ${csrf}" \
-    -H "User-Agent: $UA" \
-    -X PUT \
-    "${BASE_URL}/ghost/api/admin/themes/${name}/activate/" >/dev/null
+  if [ -n "${GHOST_ADMIN_API_KEY:-}" ]; then
+    api_with_auth "PUT" "/ghost/api/admin/themes/${name}/activate/" "" "" "false" >/dev/null
+  else
+    api_with_auth "PUT" "/ghost/api/admin/themes/${name}/activate/" "" "$csrf" "false" >/dev/null
+  fi
 }
 
 upload_routes() {
   local csrf="$1"
   [ -f "$ROUTES_FILE" ] || { log "routes.yaml nicht gefunden unter ${ROUTES_FILE}"; return 0; }
   log "Importiere routes.yaml ..."
-  curl -s -c "$COOKIE" -b "$COOKIE" \
-    -H "Origin: ${BASE_URL}" \
-    -H "X-CSRF-Token: ${csrf}" \
-    -H "User-Agent: $UA" \
-    -F "file=@${ROUTES_FILE};type=text/yaml" \
-    -X PUT \
-    "${BASE_URL}/ghost/api/admin/settings/routes/yaml" >/dev/null
+  if [ -n "${GHOST_ADMIN_API_KEY:-}" ]; then
+    api_with_auth "PUT" "/ghost/api/admin/settings/routes/yaml" \
+      "-F file=@${ROUTES_FILE};type=text/yaml" "" "true" >/dev/null
+  else
+    api_with_auth "PUT" "/ghost/api/admin/settings/routes/yaml" \
+      "-F file=@${ROUTES_FILE};type=text/yaml" "$csrf" "true" >/dev/null
+  fi
 }
 
 resource_exists() {
-  local type="$1" # posts|pages
-  local slug="$2"
+  local type="$1" slug="$2"
   local code
-  code=$(curl -s -o /dev/null -w "%{http_code}" -c "$COOKIE" -b "$COOKIE" \
-    -H "Accept: application/json" -H "User-Agent: $UA" \
+  code=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "Accept: application/json" \
+    -H "User-Agent: $UA" \
+    -H "Authorization: Ghost ${GHOST_ADMIN_API_KEY:-}" \
     "${BASE_URL}/ghost/api/admin/${type}/slug/${slug}/?formats=html")
   [ "$code" = "200" ]
 }
 
 create_page() {
   local csrf="$1" slug="$2" title="$3" file="$4" show_title_and_feature_image="${5:-true}"
+  if [ -n "${GHOST_ADMIN_API_KEY:-}" ]; then
+    # Nutzung der Admin-Key-Auth -> resource_exists funktioniert wie oben
+    :
+  else
+    # Fallback-Existenzcheck ohne Key (Cookie/CSRF). Wenn nicht möglich, überspringen wir den Check.
+    :
+  fi
+
   if resource_exists "pages" "$slug"; then
     log "Seite '$slug' existiert bereits, überspringe."
     return
   fi
-  local html
+
+  local html jq_data
   html="$(< "$file")"
   log "Erstelle Seite '$slug' …"
 
-  local jq_data
   if [ "$show_title_and_feature_image" = "false" ]; then
     jq_data=$(jq -n \
       --arg title "$title" \
@@ -204,14 +312,11 @@ create_page() {
       '{pages:[{title:$title,slug:$slug,status:"published",html:$html,authors:[{email:$author}]}]}')
   fi
 
-  curl -s -c "$COOKIE" -b "$COOKIE" \
-    -H "Content-Type: application/json" \
-    -H "Origin: ${BASE_URL}" \
-    -H "X-CSRF-Token: ${csrf}" \
-    -H "User-Agent: $UA" \
-    -X POST \
-    -d "$jq_data" \
-    "${BASE_URL}/ghost/api/admin/pages/" >/dev/null
+  if [ -n "${GHOST_ADMIN_API_KEY:-}" ]; then
+    api_with_auth "POST" "/ghost/api/admin/pages/" "$jq_data" "" "false" >/dev/null
+  else
+    api_with_auth "POST" "/ghost/api/admin/pages/" "$jq_data" "$csrf" "false" >/dev/null
+  fi
 }
 
 create_post() {
@@ -220,11 +325,11 @@ create_post() {
     log "Post '$slug' existiert bereits, überspringe."
     return
   fi
-  local html
+
+  local html jq_data
   html="$(< "$file")"
   log "Erstelle Post '$slug' …"
 
-  local jq_data
   if [ -n "$feature_image" ]; then
     jq_data=$(jq -n \
       --arg title "$title" \
@@ -244,77 +349,87 @@ create_post() {
       '{posts:[{title:$title,slug:$slug,status:"published",html:$html,authors:[{email:$author}],tags:( $json_tags | fromjson )}]}')
   fi
 
-  curl -s -c "$COOKIE" -b "$COOKIE" \
-    -H "Content-Type: application/json" \
-    -H "Origin: ${BASE_URL}" \
-    -H "X-CSRF-Token: ${csrf}" \
-    -H "User-Agent: $UA" \
-    -X POST \
-    -d "$jq_data" \
-    "${BASE_URL}/ghost/api/admin/posts/" >/dev/null
+  if [ -n "${GHOST_ADMIN_API_KEY:-}" ]; then
+    api_with_auth "POST" "/ghost/api/admin/posts/" "$jq_data" "" "false" >/dev/null
+  else
+    api_with_auth "POST" "/ghost/api/admin/posts/" "$jq_data" "$csrf" "false" >/dev/null
+  fi
 }
 
 update_navigation() {
   local csrf="$1"
   log "Aktualisiere Haupt- und sekundäre Navigation …"
-  curl -s -c "$COOKIE" -b "$COOKIE" \
-    -H "Content-Type: application/json" \
-    -H "Origin: ${BASE_URL}" \
-    -H "X-CSRF-Token: ${csrf}" \
-    -H "User-Agent: $UA" \
-    -X PUT \
-    -d '{
-      "settings": [
-        {
-          "key": "navigation",
-          "value": [
-            { "label": "Start", "url": "/" },
-            { "label": "Blog", "url": "/blog/" },
-            { "label": "Presse", "url": "/presse/" },
-            { "label": "Beispielseite", "url": "/beispielseite/" }
-          ]
-        },
-        {
-          "key": "secondary_navigation",
-          "value": [
-            { "label": "Datenschutz", "url": "/datenschutz/" },
-            { "label": "Impressum", "url": "/impressum/" }
-          ]
-        }
-      ]
-    }' \
-    "${BASE_URL}/ghost/api/admin/settings/?source=html" >/dev/null
+  local body='{
+    "settings": [
+      {
+        "key": "navigation",
+        "value": [
+          { "label": "Start", "url": "/" },
+          { "label": "Blog", "url": "/blog/" },
+          { "label": "Presse", "url": "/presse/" },
+          { "label": "Beispielseite", "url": "/beispielseite/" }
+        ]
+      },
+      {
+        "key": "secondary_navigation",
+        "value": [
+          { "label": "Datenschutz", "url": "/datenschutz/" },
+          { "label": "Impressum", "url": "/impressum/" }
+        ]
+      }
+    ]
+  }'
+
+  if [ -n "${GHOST_ADMIN_API_KEY:-}" ]; then
+    api_with_auth "PUT" "/ghost/api/admin/settings/?source=html" "$body" "" "false" >/dev/null
+  else
+    api_with_auth "PUT" "/ghost/api/admin/settings/?source=html" "$body" "$csrf" "false" >/dev/null
+  fi
 }
 
 # ---- Hauptablauf ----------------------------------------------------------------
 
 main() {
   wait_for_ghost
+  load_generated_keys
+
+  local csrf=""
 
   # Falls Setup nötig: einmalige Einrichtung (Owner & Blogtitel)
-  # Danach Session-Login (auch wenn Setup gerade stattfand – neue Session holen)
   if [ "$(setup_needed)" = "yes" ]; then
-    # Für Setup brauchen wir zunächst eine Session + CSRF
-    login_session
     csrf="$(get_csrf)"
     do_setup "$csrf"
+
+    # Nach Setup: frischen CSRF holen (neue Session möglich)
+    csrf="$(get_csrf)"
+
+    # Integration anlegen und Keys speichern
+    local keys_json
+    keys_json="$(create_or_get_integration "$csrf" "Bootstrap Integration")"
+    persist_keys "$keys_json" "$GENERATED_KEYS_FILE"
+
+    # Admin-Key in diese Laufzeit übernehmen
+    export GHOST_ADMIN_API_KEY
+    GHOST_ADMIN_API_KEY="$(echo "$keys_json" | jq -r '.admin_api_key')"
+  else
+    # Kein Setup nötig – verwende ggf. bereits generierte Keys oder .env
+    if [ -z "${GHOST_ADMIN_API_KEY:-}" ]; then
+      log "Warnung: Kein GHOST_ADMIN_API_KEY gefunden. Einige Admin-Calls könnten ohne Key fehlschlagen."
+      csrf="$(get_csrf)" || true
+    fi
   fi
 
-  # Session neu sicherstellen und CSRF holen (frische Session)
-  login_session
-  csrf="$(get_csrf)"
-
   download_theme
-  theme_name="$(upload_theme "$csrf")"
-  [ -n "$theme_name" ] && activate_theme "$csrf" "$theme_name"
+  theme_name="$(upload_theme "${csrf:-}")"
+  [ -n "$theme_name" ] && activate_theme "${csrf:-}" "$theme_name"
 
-  upload_routes "$csrf"
-  update_navigation "$csrf"
+  upload_routes "${csrf:-}"
+  update_navigation "${csrf:-}"
 
   # Seiten
   sed -e "s|\[BLOGTITLE\]|${GHOST_SETUP_BLOG_TITLE}|g" \
       /bootstrap/pages/start.html > /tmp/start.html
-  create_page "$csrf" "start" "Start" "/tmp/start.html" "false"
+  create_page "${csrf:-}" "start" "Start" "/tmp/start.html" "false"
 
   YEAR_NOW=$(date '+%Y')
   sed -e "s|\[Vorname Nachname\]|${GHOST_SETUP_NAME}|g" \
@@ -322,29 +437,29 @@ main() {
       -e "s|\[DOMAIN\]|${DOMAIN}|g" \
       -e "s|\[JAHR\]|${YEAR_NOW}|g" \
       /bootstrap/pages/impressum.html > /tmp/impressum.html
-  create_page "$csrf" "impressum" "Impressum" "/tmp/impressum.html" "true"
+  create_page "${csrf:-}" "impressum" "Impressum" "/tmp/impressum.html" "true"
 
   DATE_NOW=$(date '+%d.%m.%Y')
   sed -e "s|\[Vorname Nachname\]|${GHOST_SETUP_NAME}|g" \
       -e "s|\[DATUM\]|${DATE_NOW}|g" \
       /bootstrap/pages/datenschutz.html > /tmp/datenschutz.html
-  create_page "$csrf" "datenschutz" "Datenschutzerklärung" "/tmp/datenschutz.html" "true"
+  create_page "${csrf:-}" "datenschutz" "Datenschutzerklärung" "/tmp/datenschutz.html" "true"
 
   sed -e "s|\[EMAIL\]|${GHOST_SETUP_EMAIL}|g" \
       /bootstrap/pages/presse.html > /tmp/presse.html
-  create_page "$csrf" "presse" "Presse" "/tmp/presse.html" "true"
+  create_page "${csrf:-}" "presse" "Presse" "/tmp/presse.html" "true"
 
   sed -e "s|\[Vorname Nachname\]|${GHOST_SETUP_NAME}|g" \
       /bootstrap/pages/beispielseite.html > /tmp/beispielseite.html
-  create_page "$csrf" "beispielseite" "Beispielseite" "/tmp/beispielseite.html" "true"
+  create_page "${csrf:-}" "beispielseite" "Beispielseite" "/tmp/beispielseite.html" "true"
 
   # Blogposts
-  create_post "$csrf" "beispiel-post" "Beispiel-Blogpost" "/bootstrap/posts/beispiel-post.html" '[]' \
+  create_post "${csrf:-}" "beispiel-post" "Beispiel-Blogpost" "/bootstrap/posts/beispiel-post.html" '[]' \
     "https://images.unsplash.com/photo-1599045118108-bf9954418b76?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3wxMTc3M3wwfDF8c2VhcmNofDE3fHxob3NwaXRhbHxlbnwwfHx8fDE3NjAxMDM0MzV8MA&ixlib=rb-4.1.0&q=80&w=2000"
 
   sed -e "s|\[EMAIL\]|${GHOST_SETUP_EMAIL}|g" \
       /bootstrap/posts/beispiel-pressemitteilung.html > /tmp/beispiel-pressemitteilung.html
-  create_post "$csrf" "beispiel-pressemitteilung" "Beispiel-Pressemitteilung" "/tmp/beispiel-pressemitteilung.html" \
+  create_post "${csrf:-}" "beispiel-pressemitteilung" "Beispiel-Pressemitteilung" "/tmp/beispiel-pressemitteilung.html" \
     '[{"name":"#pressemitteilung"}]'
 
   log "Bootstrap erfolgreich abgeschlossen."
