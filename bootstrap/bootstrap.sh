@@ -9,7 +9,7 @@ set -euo pipefail
 # Basis-ENV
 DOMAIN="${DOMAIN:?missing DOMAIN}"
 ORIGIN="https://${DOMAIN}"
-ACCEPT_VERSION="${GHOST_ACCEPT_VERSION:-v6.0}"
+ACCEPT_VERSION="${GHOST_ACCEPT_VERSION:-v6.3}"
 SPECTRE_ZIP_URL="${SPECTRE_ZIP_URL:?missing SPECTRE_ZIP_URL}"
 
 # Automatische Registrierung: ausschließlich diese 4 Variablen
@@ -127,8 +127,17 @@ fi
 # 4) Theme spectre hochladen & aktivieren
 if [ ! -f "${MARKER_DIR}/theme.done" ]; then
   echo "[4] Lade Spectre-Theme ..."
+
   curl -sSfL -o /tmp/spectre.zip "${SPECTRE_ZIP_URL}"
-  api_auth POST "/ghost/api/admin/themes/upload/" \
+  # ZIP validieren
+  if ! file /tmp/spectre.zip | grep -qi 'zip archive'; then
+    echo "Fehler: spectre.zip scheint keine ZIP-Datei zu sein (Download-URL prüfen)"; exit 1
+  fi
+
+  # Optional: interne URL statt externem Host, um Proxy-Probleme zu vermeiden
+  GHOST_UPLOAD_BASE="${GHOST_UPLOAD_BASE:-${ORIGIN}}"
+  # Beispiel: in .env GHOST_UPLOAD_BASE="http://spectre-ghost:2368" setzen, falls Traefik 405 verursacht
+  api_auth POST "${GHOST_UPLOAD_BASE#${ORIGIN}}/ghost/api/admin/themes/upload/" \
     -F "file=@/tmp/spectre.zip" >/dev/null
   set +e
   api_auth PUT "/ghost/api/admin/themes/spectre/activate/" >/dev/null 2>&1
@@ -234,7 +243,7 @@ fi
 # 8) Code Injection (Header)
 if [ ! -f "${MARKER_DIR}/codeinj.done" ]; then
   echo "[8] Setze Code Injection (Header) ..."
-  HEADER_CODE="${CODEINJECTION_HEAD:-<script>window.YT_DATA_URL_PREFIX='/yt-proxy/data';window.YT_THUMBNAIL_URL_PREFIX='/yt-proxy/thumbnail';</script>}"
+  HEADER_CODE="${CODEINJECTION_HEAD:-<script>window.YT_DATA_URL_PREFIX='/proxy/youtube/data';window.YT_THUMBNAIL_URL_PREFIX='/proxy/youtube/thumbnail';</script>}"
   curl -sSf -b "${COOKIE_JAR}" -X PUT "${ORIGIN}/ghost/api/admin/settings/" \
     -H "Origin: ${ORIGIN}" \
     -H "Accept-Version: ${ACCEPT_VERSION}" \
