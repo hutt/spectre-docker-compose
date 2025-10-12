@@ -95,7 +95,7 @@ services:
     container_name: ${CONTAINER_NAME_PREFIX}-bootstrap
     build:
       context: ./bootstrap
-    #image: hutt/ghost-spectre:latest
+    image: hutt/ghost-spectre:latest
     restart: "no"
     environment:
       GHOST_SETUP_NAME: ${GHOST_SETUP_NAME}
