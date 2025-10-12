@@ -95,36 +95,23 @@ get_csrf() {
   log "Hole CSRF-Token ..."
   local headers token
   headers="$(mktemp)"
-  
-  # Mehrere Versuche mit verschiedenen Endpoints
-  # 1. Versuch: /site/
+
+  # Internen Host-Header setzen, damit Ghost nicht auf HTTPS-Redirect geht
   curl -s -L -D "$headers" -o /dev/null \
        -c "$COOKIE" -b "$COOKIE" \
+       -H "Host: ${DOMAIN}" \
        -H "Accept: application/json" \
        -H "User-Agent: $UA" \
-       -L \
-       "${BASE_URL}/ghost/api/admin/site/" 2>/dev/null || true
-  
-  token="$(awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="x-csrf-token"{gsub(/\r/,"",$2);print $2}' "$headers" | head -n1 || true)"
-  
-  # 2. Versuch: /users/me/ (falls noch kein Token)
+       "${BASE_URL}/ghost/api/admin/site/"
+
+  token=$(awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="x-csrf-token"{gsub(/\r/,"",$2);print $2}' "$headers" || true)
+
   if [ -z "${token:-}" ]; then
-    curl -s -D "$headers" -o /dev/null \
-         -c "$COOKIE" -b "$COOKIE" \
-         -H "Accept: application/json" \
-         -H "User-Agent: $UA" \
-         -L \
-         "${BASE_URL}/ghost/api/admin/users/me/" 2>/dev/null || true
-    
-    token="$(awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="x-csrf-token"{gsub(/\r/,"",$2);print $2}' "$headers" | head -n1 || true)"
-  fi
-  
-  if [ -z "${token:-}" ]; then
-    log "FEHLER: Kein CSRF-Token im Header gefunden."
+    log "Kein CSRF-Token im Header gefunden."
     exit 1
   fi
-  
-  log "CSRF-Token erfolgreich abgerufen."
+
+  log "CSRF-Token erhalten."
   echo "$token"
 }
 
