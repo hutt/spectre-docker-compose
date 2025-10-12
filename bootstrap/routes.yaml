@@ -1,0 +1,20 @@
+routes:
+  /rss/:
+    template: rss
+    content_type: text/xml
+  /:
+    template: page
+    data: page.start
+
+collections:
+  /blog/:
+    permalink: /blog/{slug}/
+    template: home
+  /presse/mitteilungen/:
+    permalink: /presse/mitteilungen/{year}/{slug}/
+    template: search-pressemitteilungen
+    filter: 'tag:hash-pressemitteilung'
+
+taxonomies:
+  tag: /tag/{slug}/
+  author: /autor_in/{slug}/
