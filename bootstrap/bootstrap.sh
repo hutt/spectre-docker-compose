@@ -94,25 +94,30 @@ api_jwt() {
 create_integration_via_session() {
   log "Erzeuge Integration per Admin-Session (einmalig)..."
   local cookie hdr csrf payload resp
+
   cookie=$(mktemp -t ghost-cookie.XXXXXX)
   hdr=$(mktemp -t ghost-hdr.XXXXXX)
 
-  # Session-Login
+  # Admin-Session erstellen (neuer Endpoint für Ghost 6.x)
   curl -sS -D "$hdr" -c "$cookie" -b "$cookie" \
     -H "Content-Type: application/json" \
     -H "Accept-Version: v6" \
     -H "User-Agent: ${UA}" \
-    -X POST -d "$(jq -nc --arg u "$GHOST_SETUP_EMAIL" --arg p "$GHOST_SETUP_PASSWORD" '{username:$u,password:$p}')" \
-    "${BASE_URL}/ghost/api/admin/session/" >/dev/null
+    -X POST \
+    -d "$(jq -nc --arg u "$GHOST_SETUP_EMAIL" --arg p "$GHOST_SETUP_PASSWORD" \
+         '{username:$u,password:$p}')" \
+    "${BASE_URL}/ghost/api/admin/authentication/session/" >/dev/null
 
-  # CSRF-Token holen
+  # CSRF-Token aus den Response-Headern extrahieren
   curl -sS -D "$hdr" -c "$cookie" -b "$cookie" \
     -H "Accept-Version: v6" \
     -H "User-Agent: ${UA}" \
     "${BASE_URL}/ghost/api/admin/site/" >/dev/null
   csrf=$(awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="x-csrf-token"{gsub(/\r/,"",$2);print $2}' "$hdr" | head -n1)
 
-  [ -n "$csrf" ] || { log "CSRF-Token nicht erhalten"; exit 1; }
+  if [ -z "$csrf" ]; then
+    log "CSRF-Token nicht erhalten"; exit 1
+  fi
 
   payload='{"integrations":[{"name":"Bootstrap Integration"}]}'
   resp=$(curl -sS -D "$hdr" -c "$cookie" -b "$cookie" \
@@ -123,9 +128,12 @@ create_integration_via_session() {
     -H "X-CSRF-Token: ${csrf}" \
     -X POST -d "$payload" \
     "${BASE_URL}/ghost/api/admin/integrations/")
+
+  # Rückgabe: JSON mit admin_api_key und content_api_key
   echo "$resp" | jq -r \
     '.integrations[0]|{admin_api_key:(.api_keys[]|select(.type=="admin")|.secret),content_api_key:(.api_keys[]|select(.type=="content")|.secret)}'
 }
+
 
 # ----------------------------------------------------------------------------
 # Mittels JWT: Integration prüfen/erstellen
