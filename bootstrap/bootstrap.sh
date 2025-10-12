@@ -8,7 +8,7 @@ set -euo pipefail
 
 # Basis-ENV
 DOMAIN="${DOMAIN:?missing DOMAIN}"
-ORIGIN="https://${DOMAIN}"
+ORIGIN="http://bootstrap"
 ACCEPT_VERSION="${GHOST_ACCEPT_VERSION:-v6.3}"
 SPECTRE_ZIP_URL="${SPECTRE_ZIP_URL:?missing SPECTRE_ZIP_URL}"
 
@@ -20,6 +20,7 @@ SETUP_BLOG_TITLE="${GHOST_SETUP_BLOG_TITLE:?missing GHOST_SETUP_BLOG_TITLE}"
 
 # Admin API Key optional (id:secret). Falls fehlt, wird er per Session erstellt.
 GHOST_ADMIN_API_KEY="${GHOST_ADMIN_API_KEY:-}"
+GHOST_UPLOAD_BASE="http://ghost:2368"
 
 COOKIE_JAR="/tmp/ghost_cookie.txt"
 MARKER_DIR="/tmp/ghost-bootstrap"
@@ -60,7 +61,7 @@ done
 
 # 1) Owner-Erst-Setup
 if [ ! -f "${MARKER_DIR}/setup.done" ]; then
-  echo "[1] Führe Owner-Setup aus (idempotent) ..."
+  echo "Führe Owner-Setup aus (idempotent) ..."
   set +e
   api POST "/ghost/api/admin/setup/" \
     -H "Origin: ${ORIGIN}" \
@@ -122,7 +123,7 @@ fi
 
 # 3) Admin JWT erzeugen
 if [ ! -f "${MARKER_DIR}/jwt.done" ]; then
-  echo "[3] Erzeuge Admin JWT ..."
+  echo "Erzeuge Admin JWT ..."
   node /bootstrap/node-bootstrap.mjs < "${INTEGRATION_KEY_FILE}" > "${JWT_FILE}"
   touch "${MARKER_DIR}/jwt.done"
   echo "Admin JWT erstellt."
@@ -184,11 +185,10 @@ fi
 
 # 4) Theme spectre hochladen & aktivieren
 if [ ! -f "${MARKER_DIR}/theme.done" ]; then
-  echo "[4] Lade Spectre-Theme ..."
+  echo "Lade Spectre-Theme ..."
   curl -sSfL --retry 5 --retry-all-errors -o /tmp/spectre.zip "${SPECTRE_ZIP_URL}"
   # Optional interne Base-URL, um Proxy-Einflüsse zu vermeiden (z.B. http://test-ghost-ghost:2368)
-  GHOST_UPLOAD_BASE="${GHOST_UPLOAD_BASE:-${ORIGIN}}"
-  # GHOST_UPLOAD_BASE="http://ghost:2368"
+  # GHOST_UPLOAD_BASE="${GHOST_UPLOAD_BASE:-${ORIGIN}}"
   # Wenn GHOST_UPLOAD_BASE == ORIGIN, api_auth POST "/ghost/api/..." nutzen
   if [ "${GHOST_UPLOAD_BASE}" = "${ORIGIN}" ]; then
     api_auth POST "/ghost/api/admin/themes/upload/" -F "file=@/tmp/spectre.zip" >/dev/null
@@ -271,7 +271,7 @@ fi
 
 # 6) Session-Login für routes & Code-Injection
 if [ ! -f "${MARKER_DIR}/session.done" ]; then
-  echo "[6] Session-Login (für routes/Code-Injection) ..."
+  echo "[Session-Login (für routes/Code-Injection) ..."
   rm -f "${COOKIE_JAR}"
   curl -sSf -c "${COOKIE_JAR}" -X POST "${ORIGIN}/ghost/api/admin/session/" \
     -H "Origin: ${ORIGIN}" \
@@ -284,7 +284,7 @@ fi
 
 # 7) routes.yaml hochladen
 if [ ! -f "${MARKER_DIR}/routes.done" ]; then
-  echo "[7] Lade routes.yaml hoch ..."
+  echo "Lade routes.yaml hoch ..."
   curl -sSf -b "${COOKIE_JAR}" -X POST "${ORIGIN}/ghost/api/admin/settings/routes/yaml/" \
     -H "Origin: ${ORIGIN}" \
     -H "Accept-Version: ${ACCEPT_VERSION}" \
@@ -295,7 +295,7 @@ fi
 
 # 8) Code Injection (Header)
 if [ ! -f "${MARKER_DIR}/codeinj.done" ]; then
-  echo "[8] Setze Code Injection (Header) ..."
+  echo "Setze Code Injection (Header) ..."
   HEADER_CODE="${CODEINJECTION_HEAD:-<script>window.YT_DATA_URL_PREFIX='/proxy/youtube/data';window.YT_THUMBNAIL_URL_PREFIX='/proxy/youtube/thumbnail';</script>}"
   curl -sSf -b "${COOKIE_JAR}" -X PUT "${ORIGIN}/ghost/api/admin/settings/" \
     -H "Origin: ${ORIGIN}" \

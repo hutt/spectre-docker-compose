@@ -1,6 +1,5 @@
 services:
   redis:
-    container_name: ${CONTAINER_NAME_PREFIX}-redis
     image: redis:7-alpine
     restart: unless-stopped
     volumes:
@@ -27,7 +26,6 @@ services:
       - default
 
   ghost:
-    container_name: ${CONTAINER_NAME_PREFIX}-ghost
     image: ghost:latest
     depends_on:
       redis:
@@ -86,20 +84,14 @@ services:
       - default
       - proxy
     healthcheck:
-      test: "node -e 'require(\"http\").get({host: \"localhost\", port: 2368, path: \"/ghost/api/admin/site/\", headers: {\"X-Forwarded-Proto\": \"https\"}}, res => process.exit(res.statusCode === 200 ? 0 : 1)).on(\"error\", () => process.exit(1));'"
+      test: "node -e 'require(\"http\").get({host: \"localhost\", port: 2368, path: \"/ghost/api/admin/site/\", headers: {\"X-Forwarded-Proto\":\"https\"}}, res => process.exit(res.statusCode===200?0:1)).on(\"error\",()=>process.exit(1));'"
       interval: 10s
       timeout: 10s
       retries: 10
       start_period: 30s
     labels:
       - "traefik.enable=true"
-      # HTTP=>HTTPS
-      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`) && !PathPrefix(`/.ghost/activitypub/`) && !Path(`/.well-known/webfinger`) && !Path(`/.well-known/nodeinfo`)"
-      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.entrypoints=http"
-      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.service=${CONTAINER_NAME_PREFIX}-ghost"
-      - "traefik.http.middlewares.${CONTAINER_NAME_PREFIX}-redirect-to-https.redirectscheme.scheme=https"
-      - "traefik.http.middlewares.${CONTAINER_NAME_PREFIX}-redirect-to-https.redirectscheme.permanent=true"
-      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.middlewares=${CONTAINER_NAME_PREFIX}-redirect-to-https"
+
       # HTTPS Ghost
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`) && !PathPrefix(`/.ghost/activitypub/`) && !Path(`/.well-known/webfinger`) && !Path(`/.well-known/nodeinfo`)"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.entrypoints=https"
@@ -108,20 +100,29 @@ services:
       - "traefik.http.services.${CONTAINER_NAME_PREFIX}-ghost.loadbalancer.passhostheader=true"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.tls=true"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.tls.certresolver=http"
-      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.middlewares=compresstraefik"
-      - "traefik.http.middlewares.compresstraefik.compress=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.priority=100"
+
+      # HTTP => HTTPS redirect
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`) && !PathPrefix(`/.ghost/activitypub/`) && !Path(`/.well-known/webfinger`) && !Path(`/.well-known/nodeinfo`)"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.entrypoints=http"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.service=${CONTAINER_NAME_PREFIX}-ghost"
+      - "traefik.http.middlewares.${CONTAINER_NAME_PREFIX}-redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.${CONTAINER_NAME_PREFIX}-redirect-to-https.redirectscheme.permanent=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.middlewares=${CONTAINER_NAME_PREFIX}-redirect-to-https"
+
       # ActivityPub HTTPS passthrough
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.entrypoints=https"
-      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.rule=Host(`${DOMAIN}`) && (PathPrefix(`/.ghost/activitypub/`) || Path(`/.well-known/webfinger`) || Path(`/.well-known/nodeinfo`))"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.rule=Host(`${DOMAIN}`) && PathPrefix(`/.ghost/activitypub/`) && Path(`/.well-known/webfinger`) && Path(`/.well-known/nodeinfo`)"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.service=${CONTAINER_NAME_PREFIX}-ghost-activitypub"
       - "traefik.http.services.${CONTAINER_NAME_PREFIX}-ghost-activitypub.loadbalancer.server.url=https://ap.ghost.org"
       - "traefik.http.services.${CONTAINER_NAME_PREFIX}-ghost-activitypub.loadbalancer.passhostheader=true"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.tls=true"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.tls.certresolver=http"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.priority=50"
+
       - "traefik.docker.network=proxy"
 
   bootstrap:
-    container_name: ${CONTAINER_NAME_PREFIX}-bootstrap
     build:
       context: ./bootstrap
     image: hutt/spectre:latest
@@ -140,7 +141,6 @@ services:
       - default
 
   proxy:
-    container_name: ${CONTAINER_NAME_PREFIX}-proxy
     image: nginx:alpine
     depends_on:
       ghost:
