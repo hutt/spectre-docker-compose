@@ -1,376 +1,247 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ============================================
-# Ghost Bootstrap – Erst-Setup nur mit first_setup (Staff-Token only)
-# ============================================
+# Erwartet über env_file (.env):
+# DOMAIN, SPECTRE_ZIP_URL
+# GHOST_SETUP_NAME, GHOST_SETUP_EMAIL, GHOST_SETUP_PASSWORD, GHOST_SETUP_BLOG_TITLE
+# Optional: GHOST_ADMIN_API_KEY (id:secret), GHOST_ACCEPT_VERSION, CODEINJECTION_HEAD, INTEGRATION_NAME
 
-# Required ENV:
-# - DOMAIN
-# - SPECTRE_ZIP_URL
-# - GHOST_SETUP_EMAIL
-# - GHOST_SETUP_NAME
-# - GHOST_SETUP_BLOG_TITLE
+# Basis-ENV
+DOMAIN="${DOMAIN:?missing DOMAIN}"
+ORIGIN="https://${DOMAIN}"
+ACCEPT_VERSION="${GHOST_ACCEPT_VERSION:-v6.0}"
+SPECTRE_ZIP_URL="${SPECTRE_ZIP_URL:?missing SPECTRE_ZIP_URL}"
 
-BASE_URL="https://${DOMAIN}"
-UA="Ghost-Bootstrap/2.4"
-ROUTES_SRC="/bootstrap/routes.yaml"
-ROUTES_DST="/var/lib/ghost/content/settings/routes.yaml"
-TMP_DIR="/tmp/ghost-bootstrap"
-SPECTRE_ZIP="${TMP_DIR}/spectre.zip"
-FIRST_SETUP_FILE="/bootstrap/first_setup"
+# Automatische Registrierung: ausschließlich diese 4 Variablen
+SETUP_NAME="${GHOST_SETUP_NAME:?missing GHOST_SETUP_NAME}"
+SETUP_EMAIL="${GHOST_SETUP_EMAIL:?missing GHOST_SETUP_EMAIL}"
+SETUP_PASSWORD="${GHOST_SETUP_PASSWORD:?missing GHOST_SETUP_PASSWORD}"
+SETUP_BLOG_TITLE="${GHOST_SETUP_BLOG_TITLE:?missing GHOST_SETUP_BLOG_TITLE}"
 
-mkdir -p "${TMP_DIR}"
+# Admin API Key optional (id:secret). Falls fehlt, wird er per Session erstellt.
+ADMIN_API_KEY="${GHOST_ADMIN_API_KEY:-}"
 
-log() {
-  printf '%s %s\n' "$(date +'%F %T')" "$*" >&2
+COOKIE_JAR="/tmp/ghost_cookie.txt"
+MARKER_DIR="/tmp/ghost-bootstrap"
+JWT_FILE="/tmp/ghost_admin_jwt.txt"
+INTEGRATION_KEY_FILE="/tmp/ghost_admin_api_key.txt"
+
+mkdir -p "${MARKER_DIR}"
+
+api() {
+  local method="$1"; shift
+  local path="$1"; shift
+  local extra_args=("$@")
+  curl -sSf -X "${method}" "${ORIGIN}${path}" \
+    -H "Accept-Version: ${ACCEPT_VERSION}" \
+    "${extra_args[@]}"
 }
 
-# ---------------------------
-# Retry helper (exponential backoff)
-# ---------------------------
-retry() {
-  # retry <max_attempts> <initial_delay_seconds> <cmd...>
-  local max=$1; shift
-  local delay=$1; shift
-  local attempt=1
-  local rc=0
-  while true; do
-    if "$@"; then
-      return 0
-    fi
-    rc=$?
-    if [ $attempt -ge $max ]; then
-      return $rc
-    fi
-    log "Retry $attempt/$max failed (rc=$rc). Sleeping ${delay}s..."
-    sleep "$delay"
-    delay=$((delay*2))
-    attempt=$((attempt+1))
-  done
+api_auth() {
+  local method="$1"; shift
+  local path="$1"; shift
+  local token
+  token="$(cat "${JWT_FILE}")"
+  local extra_args=("$@")
+  curl -sSf -X "${method}" "${ORIGIN}${path}" \
+    -H "Accept-Version: ${ACCEPT_VERSION}" \
+    -H "Authorization: Ghost ${token}" \
+    "${extra_args[@]}"
 }
 
-# ---------------------------
-# Detect Ghost API Version
-# ---------------------------
-detect_api_version() {
-  local hdr ver
-  hdr=$(curl -sS -I -H "X-Forwarded-Proto: https" "${BASE_URL}/ghost/api/admin/site/" || true)
-  ver=$(printf "%s\n" "$hdr" | awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="content-version"{gsub(/\r/,"",$2);print $2}' | head -n1)
-  GHOST_API_VERSION="${ver:-v6.3}"
-  log "Accept-Version: ${GHOST_API_VERSION}"
-}
-
-# ---------------------------
-# Admin API caller (Staff Token only)
-# ---------------------------
-STAFF_ACCESS_TOKEN=""
-
-require_staff_token() {
-  if [ -z "${STAFF_ACCESS_TOKEN}" ]; then
-    log "ERROR: Kein STAFF_ACCESS_TOKEN verfügbar. Vorgang kann nicht fortgesetzt werden."
-    exit 1
+echo "[0] Warte auf Ghost Admin API ..."
+for i in {1..60}; do
+  if api GET "/ghost/api/admin/site/" >/dev/null 2>&1; then
+    echo "Ghost Admin API erreichbar."
+    break
   fi
-}
+  sleep 2
+done
 
-api_admin() {
-  local method=$1 path=$2 body=${3:-}
-  require_staff_token
-  curl -sSf \
-    -H "Authorization: Bearer ${STAFF_ACCESS_TOKEN}" \
+# 1) Owner-Erst-Setup
+if [ ! -f "${MARKER_DIR}/setup.done" ]; then
+  echo "[1] Führe Owner-Setup aus (idempotent) ..."
+  set +e
+  api POST "/ghost/api/admin/setup/" \
+    -H "Origin: ${ORIGIN}" \
     -H "Content-Type: application/json" \
-    -H "Accept-Version: ${GHOST_API_VERSION}" \
-    -H "User-Agent: ${UA}" \
-    -X "$method" \
-    ${body:+-d "$body"} \
-    "${BASE_URL}/ghost/api/admin${path}"
-}
+    --data "$(jq -n \
+      --arg name  "$SETUP_NAME" \
+      --arg email "$SETUP_EMAIL" \
+      --arg pass  "$SETUP_PASSWORD" \
+      --arg title "$SETUP_BLOG_TITLE" \
+      '{setup:[{name:$name,email:$email,password:$pass,blogTitle:$title}]}')" >/dev/null 2>&1
+  set -e
+  touch "${MARKER_DIR}/setup.done"
+  echo "Owner-Setup abgeschlossen (oder bereits vorhanden)."
+fi
 
-# ---------------------------
-# User lookup helpers
-# ---------------------------
-get_user_id_by_email() {
-  local email="$1"
-  local res uid
-  res=$(api_admin GET "/users/?filter=email:${email}&limit=1") || return 1
-  uid=$(echo "$res" | jq -r '.users[0].id // empty')
-  if [ -z "$uid" ]; then
-    log "ERROR: Kein User mit E-Mail ${email} gefunden."
-    return 1
-  fi
-  echo "$uid"
-}
+# 2) Falls kein Admin API Key vorhanden, Integration per Session-Login anlegen
+if [ -z "${ADMIN_API_KEY}" ] && [ ! -f "${MARKER_DIR}/integration.done" ]; then
+  echo "[2] Erzeuge Admin API Key per Session-Login ..."
+  rm -f "${COOKIE_JAR}"
+  # Session-Login mit den Setup-Credentials (GHOST_SETUP_EMAIL/PASSWORD)
+  curl -sSf -c "${COOKIE_JAR}" -X POST "${ORIGIN}/ghost/api/admin/session/" \
+    -H "Origin: ${ORIGIN}" \
+    -H "Accept-Version: ${ACCEPT_VERSION}" \
+    -H "Content-Type: application/json" \
+    --data "{\"username\":\"${GHOST_SETUP_EMAIL}\",\"password\":\"${GHOST_SETUP_PASSWORD}\"}" >/dev/null
 
-get_user_id_by_slug() {
-  local slug="$1"
-  local res uid
-  res=$(api_admin GET "/users/?filter=slug:${slug}&limit=1") || return 1
-  uid=$(echo "$res" | jq -r '.users[0].id // empty')
-  if [ -z "$uid" ]; then
-    log "ERROR: Kein User mit Slug ${slug} gefunden."
-    return 1
-  fi
-  echo "$uid"
-}
+  INTEGRATION_NAME="${INTEGRATION_NAME:-CI Bootstrap}"
+  create_resp=$(curl -sSf -b "${COOKIE_JAR}" -X POST "${ORIGIN}/ghost/api/admin/integrations/" \
+    -H "Origin: ${ORIGIN}" \
+    -H "Accept-Version: ${ACCEPT_VERSION}" \
+    -H "Content-Type: application/json" \
+    --data "$(jq -n --arg name "$INTEGRATION_NAME" '{integrations:[{name:$name,description:"Automated bootstrap key"}]}')")
 
-# ---------------------------
-# Theme: download, upload, activate
-# ---------------------------
-download_theme() {
-  curl -fsSL "$SPECTRE_ZIP_URL" -o "$SPECTRE_ZIP"
-}
+  integration_id=$(echo "$create_resp" | jq -r '.integrations[0].id')
 
-upload_theme() {
-  require_staff_token
-  curl -sS \
-    -H "Authorization: Bearer ${STAFF_ACCESS_TOKEN}" \
-    -H "Accept-Version: ${GHOST_API_VERSION}" \
-    -H "User-Agent: ${UA}" \
-    -F "file=@${SPECTRE_ZIP}" \
-    "${BASE_URL}/ghost/api/admin/themes/upload/"
-}
+  keys_resp=$(curl -sSf -b "${COOKIE_JAR}" -X GET "${ORIGIN}/ghost/api/admin/integrations/${integration_id}/api_keys/" \
+    -H "Origin: ${ORIGIN}" \
+    -H "Accept-Version: ${ACCEPT_VERSION}")
 
-activate_theme() {
-  local theme_name="$1"
-  api_admin PUT "/themes/${theme_name}/activate/" '{}'
-}
+  admin_key_id=$(echo "$keys_resp" | jq -r '.api_keys[] | select(.type=="admin") | .id')
+  admin_key_secret=$(echo "$keys_resp" | jq -r '.api_keys[] | select(.type=="admin") | .secret')
 
-# ---------------------------
-# Navigation (Staff-only)
-# ---------------------------
-set_navigation() {
-  api_admin PUT /settings/ '{
-    "settings":[
-      {"key":"navigation","value":[
-        {"label":"Start","url":"/"},
-        {"label":"Blog","url":"/blog/"},
-        {"label":"Presse","url":"/presse/"},
-        {"label":"Beispielseite","url":"/beispielseite/"}
-      ]},
-      {"key":"secondary_navigation","value":[
-        {"label":"Datenschutz","url":"/datenschutz/"},
-        {"label":"Impressum","url":"/impressum/"}
-      ]}
-    ]
-  }'
-}
-
-# ---------------------------
-# HTML → JSON-string Helper
-# ---------------------------
-file_to_json_string() {
-  # gibt einen JSON-String (inkl. Quotes) auf stdout
-  jq -Rs . < "$1"
-}
-
-# ---------------------------
-# Prepare HTML pages/posts (sed replaces)
-# ---------------------------
-prepare_pages_with_substitutions() {
-  local year_now date_now
-  year_now=$(date '+%Y')
-  date_now=$(date '+%d.%m.%Y')
-
-  sed -e "s|\\[BLOGTITLE\\]|${GHOST_SETUP_BLOG_TITLE}|g" \
-    /bootstrap/pages/start.html > /tmp/start.html
-
-  sed -e "s|\\[Vorname Nachname\\]|${GHOST_SETUP_NAME}|g" \
-      -e "s|\\[EMAIL\\]|${GHOST_SETUP_EMAIL}|g" \
-      -e "s|\\[DOMAIN\\]|${DOMAIN}|g" \
-      -e "s|\\[JAHR\\]|${year_now}|g" \
-    /bootstrap/pages/impressum.html > /tmp/impressum.html
-
-  sed -e "s|\\[Vorname Nachname\\]|${GHOST_SETUP_NAME}|g" \
-      -e "s|\\[DATUM\\]|${date_now}|g" \
-    /bootstrap/pages/datenschutz.html > /tmp/datenschutz.html
-
-  sed -e "s|\\[EMAIL\\]|${GHOST_SETUP_EMAIL}|g" \
-    /bootstrap/pages/presse.html > /tmp/presse.html
-
-  sed -e "s|\\[Vorname Nachname\\]|${GHOST_SETUP_NAME}|g" \
-    /bootstrap/pages/beispielseite.html > /tmp/beispielseite.html
-
-  sed -e "s|\\[EMAIL\\]|${GHOST_SETUP_EMAIL}|g" \
-    /bootstrap/posts/beispiel-pressemitteilung.html > /tmp/beispiel-pressemitteilung.html
-}
-
-# ---------------------------
-# Create pages/posts with actor + escaped HTML
-# ---------------------------
-create_page_if_missing() {
-  local slug="$1" title="$2" file="$3" author_id="$4"
-  local html_json body
-  html_json=$(file_to_json_string "$file")
-  body=$(jq -nr \
-    --arg t "$title" \
-    --arg s "$slug" \
-    --arg a "$author_id" \
-    --argjson h "$html_json" \
-    '{
-      pages:[{
-        title:$t,
-        slug:$s,
-        status:"published",
-        html:$h,
-        authors:[{id:$a}]
-      }]
-    }')
-  log "create_page_if_missing(): $body"
-  api_admin POST /pages/ "$body" >/dev/null || true
-}
-
-create_post_if_missing() {
-  local slug="$1" title="$2" file="$3" tags_json="$4" author_id="$5"
-  local html_json body
-  html_json=$(file_to_json_string "$file")
-  body=$(jq -nr \
-    --arg t "$title" \
-    --arg s "$slug" \
-    --arg a "$author_id" \
-    --argjson tg "$tags_json" \
-    --argjson h "$html_json" \
-    '{
-      posts:[{
-        title:$t,
-        slug:$s,
-        status:"published",
-        html:$h,
-        authors:[{id:$a}],
-        tags:$tg
-      }]
-    }')
-  log "create_post_if_missing(): $body"
-  api_admin POST /posts/ "$body" >/dev/null || true
-}
-
-# ---------------------------
-# Routes deploy
-# ---------------------------
-deploy_routes() {
-  mkdir -p "$(dirname "$ROUTES_DST")"
-  cp "$ROUTES_SRC" "$ROUTES_DST"
-}
-
-# ---------------------------
-# Delete user with slug "superuser" if present
-# ---------------------------
-delete_superuser() {
-  log "CLEANUP: Suche User 'superuser' zum Löschen..."
-  local users_json user_id
-  users_json=$(api_admin GET "/users/?filter=slug:superuser&limit=1") || users_json=""
-  user_id=$(echo "$users_json" | jq -r '.users[0].id // empty' 2>/dev/null || echo "")
-  if [ -n "${user_id}" ]; then
-    log "CLEANUP: Superuser gefunden (id=${user_id}), lösche..."
-    api_admin DELETE "/users/${user_id}/" >/dev/null || {
-      log "CLEANUP: Löschen des Superuser fehlgeschlagen."
-      return 1
-    }
-    log "CLEANUP: Superuser gelöscht."
-  else
-    log "CLEANUP: Kein Superuser zum Löschen gefunden."
-  fi
-}
-
-# ---------------------------
-# Remove first_setup token file
-# ---------------------------
-delete_first_setup_file() {
-  if [ -f "${FIRST_SETUP_FILE}" ]; then
-    rm -f "${FIRST_SETUP_FILE}" || {
-      log "CLEANUP: Konnte ${FIRST_SETUP_FILE} nicht löschen."
-      return 1
-    }
-    log "CLEANUP: ${FIRST_SETUP_FILE} gelöscht."
-  fi
-}
-
-# ---------------------------
-# MAIN
-# ---------------------------
-main() {
-  log "=== Ghost Bootstrap START ==="
-
-  # Erst-Setup nur, wenn first_setup existiert
-  if [ ! -f "${FIRST_SETUP_FILE}" ]; then
-    log "first_setup fehlt – kein Erst-Setup erforderlich. Beende ohne Fehler."
-    exit 0
-  fi
-
-  # STAFF TOKEN laden
-  STAFF_ACCESS_TOKEN="$(tr -d ' \n\r' <"${FIRST_SETUP_FILE}" || true)"
-  if [ -z "${STAFF_ACCESS_TOKEN}" ]; then
-    log "ERROR: ${FIRST_SETUP_FILE} ist leer – kein STAFF_ACCESS_TOKEN verfügbar."
+  if [ -z "$admin_key_id" ] || [ -z "$admin_key_secret" ] || [ "$admin_key_id" = "null" ] || [ "$admin_key_secret" = "null" ]; then
+    echo "Fehler: Konnte Admin API Key nicht ermitteln."
     exit 1
   fi
 
-  # Warte auf Ghost Admin endpoint
-  log "Warte auf Ghost Admin Endpoint..."
-  retry 10 1 curl -fsS -H "X-Forwarded-Proto: https" "${BASE_URL}/ghost/api/admin/site/" >/dev/null
+  ADMIN_API_KEY="${admin_key_id}:${admin_key_secret}"
+  printf "%s" "${ADMIN_API_KEY}" > "${INTEGRATION_KEY_FILE}"
+  touch "${MARKER_DIR}/integration.done"
+  echo "Admin API Key erstellt."
+else
+  printf "%s" "${ADMIN_API_KEY}" > "${INTEGRATION_KEY_FILE}"
+fi
 
-  detect_api_version
-  log "Auth-Modus: STAFF Access Token"
+# 3) Admin JWT erzeugen
+if [ ! -f "${MARKER_DIR}/jwt.done" ]; then
+  echo "[3] Erzeuge Admin JWT ..."
+  node /bootstrap/node-bootstrap.mjs < "${INTEGRATION_KEY_FILE}" > "${JWT_FILE}"
+  touch "${MARKER_DIR}/jwt.done"
+  echo "Admin JWT erstellt."
+fi
 
-  # Actor-IDs bestimmen
-  log "[ACTOR] Ermittle User-ID für slug superuser..."
-  SUPERUSER_ID="$(get_user_id_by_slug "superuser")" || { log "ERROR: superuser-ID konnte nicht ermittelt werden."; exit 1; }
+# 4) Theme spectre hochladen & aktivieren
+if [ ! -f "${MARKER_DIR}/theme.done" ]; then
+  echo "[4] Lade Spectre-Theme ..."
+  curl -sSfL -o /tmp/spectre.zip "${SPECTRE_ZIP_URL}"
+  api_auth POST "/ghost/api/admin/themes/upload/" \
+    -F "file=@/tmp/spectre.zip" >/dev/null
+  set +e
+  api_auth PUT "/ghost/api/admin/themes/spectre/activate/" >/dev/null 2>&1
+  set -e
+  touch "${MARKER_DIR}/theme.done"
+  echo "Theme aktiviert."
+fi
 
-  log "[AUTHOR] Ermittle Autor-ID für ${GHOST_SETUP_EMAIL}..."
-  AUTHOR_ID="$(get_user_id_by_email "${GHOST_SETUP_EMAIL}")" || { log "ERROR: Autor-ID konnte nicht ermittelt werden."; exit 1; }
-
-  # THEME
-  log "[THEME] Lade Theme ZIP..."
-  retry 3 1 download_theme
-
-  log "[THEME] Lade Theme in Ghost hoch..."
-  local theme_resp raw_name
-  theme_resp=$(retry 3 1 upload_theme || echo "")
-  if echo "${theme_resp}" | jq empty >/dev/null 2>&1; then
-    raw_name=$(echo "${theme_resp}" | jq -r '.themes[0].name // empty')
-  else
-    raw_name=""
-    log "[THEME] Upload-Antwort ist kein gültiges JSON (evtl. Proxy-/Fehlerseite)."
-  fi
-
-  if [ -n "${raw_name}" ]; then
-    log "[THEME] Aktiviere Theme: ${raw_name}"
-    retry 3 1 activate_theme "$raw_name"
-  else
-    log "[THEME] Kein Theme-Name aus der Upload-Antwort ermittelt (ggf. bereits vorhanden oder anderer Fehler)."
-  fi
-
-  # NAV
-  log "[NAV] Setze Navigation..."
-  retry 3 1 set_navigation
-
-  # PAGES/POSTS mit Platzhalter-Ersetzungen
-  prepare_pages_with_substitutions
-
-  log "[PAGES] Erstelle statische Seiten..."
-  create_page_if_missing "start" "Start" "/tmp/start.html" "${AUTHOR_ID}"
-  create_page_if_missing "impressum" "Impressum" "/tmp/impressum.html" "${AUTHOR_ID}"
-  create_page_if_missing "datenschutz" "Datenschutzerklärung" "/tmp/datenschutz.html" "${AUTHOR_ID}"
-  create_page_if_missing "presse" "Presse" "/tmp/presse.html" "${AUTHOR_ID}"
-  create_page_if_missing "beispielseite" "Beispielseite" "/tmp/beispielseite.html" "${AUTHOR_ID}"
-
-  log "[POSTS] Erstelle Beispiel-Posts..."
-  create_post_if_missing "beispiel-post" "Beispiel-Blogpost" "/bootstrap/posts/beispiel-post.html" "[]" "${AUTHOR_ID}"
-  create_post_if_missing "beispiel-pressemitteilung" "Beispiel-Pressemitteilung" "/tmp/beispiel-pressemitteilung.html" '[{"name":"#pressemitteilung"}]' "${AUTHOR_ID}"
-
-  # ROUTES
-  log "[ROUTES] Kopiere routes.yaml..."
-  deploy_routes
-
-  # CLEANUP: Superuser und first_setup entfernen
-  delete_superuser || log "CLEANUP: Superuser-Löschung schlug fehl."
-  delete_first_setup_file || log "CLEANUP: first_setup-Datei-Löschung schlug fehl."
-
-  # TEMP CLEANUP
-  log "[CLEANUP] Entferne temporäre Dateien..."
-  rm -f "$SPECTRE_ZIP" || true
-  rm -f /tmp/start.html /tmp/impressum.html /tmp/datenschutz.html /tmp/presse.html /tmp/beispielseite.html /tmp/beispiel-pressemitteilung.html || true
-  rmdir "$TMP_DIR" 2>/dev/null || true
-
-  log "=== Ghost Bootstrap FINISHED ==="
+# Hilfsfunktionen: Platzhalter ersetzen, JSON-escape
+json_escape() {
+  python3 - <<'PY'
+import sys, json
+data = sys.stdin.read()
+print(json.dumps(data))
+PY
 }
 
-main
+render_html() {
+  local f="$1"
+  local today
+  today="$(date +%F)"
+  sed \
+    -e "s/\[DATUM\]/${today//\//\\/}/g" \
+    -e "s/\[EMAIL\]/${GHOST_SETUP_EMAIL//\//\\/}/g" \
+    -e 's/\r$//' \
+    "$f"
+}
+
+# 5) Inhalte anlegen
+if [ ! -f "${MARKER_DIR}/content.done" ]; then
+  echo "[5] Erzeuge Demo-Inhalte ..."
+
+  create_page() {
+    local title="$1"
+    local slug="$2"
+    local file="$3"
+    local html payload
+    html="$(render_html "$file")"
+    payload="$(jq -n --arg title "$title" --arg slug "$slug" '{pages:[{title:$title,slug:$slug,status:"published"}]}')"
+    payload="$(echo "$payload" | jq --arg html "$html" '.pages[0].html = $html')"
+    api_auth POST "/ghost/api/admin/pages/" \
+      -H "Content-Type: application/json" \
+      --data "$payload" >/dev/null
+  }
+
+  create_post() {
+    local title="$1"
+    local slug="$2"
+    local file="$3"
+    local tag="$4"
+    local html payload
+    html="$(render_html "$file")"
+    if [ -n "$tag" ]; then
+      payload="$(jq -n --arg title "$title" --arg slug "$slug" '{posts:[{title:$title,slug:$slug,status:"published",tags:[{name:"'"$tag"'"}]}]}')"
+    else
+      payload="$(jq -n --arg title "$title" --arg slug "$slug" '{posts:[{title:$title,slug:$slug,status:"published"}]}')"
+    fi
+    payload="$(echo "$payload" | jq --arg html "$html" '.posts[0].html = $html')"
+    api_auth POST "/ghost/api/admin/posts/" \
+      -H "Content-Type: application/json" \
+      --data "$payload" >/dev/null
+  }
+
+  # Seiten
+  create_page "Start" "start" "/bootstrap/pages/start.html"
+  create_page "Beispielseite" "beispielseite" "/bootstrap/pages/beispielseite.html"
+  create_page "Presse" "presse" "/bootstrap/pages/presse.html"
+  create_page "Impressum" "impressum" "/bootstrap/pages/impressum.html"
+  create_page "Datenschutz" "datenschutz" "/bootstrap/pages/datenschutz.html"
+
+  # Posts
+  create_post "Beispiel‑Post" "beispiel-post" "/bootstrap/posts/beispiel-post.html" ""
+  create_post "Beispiel‑Pressemitteilung" "beispiel-pressemitteilung" "/bootstrap/posts/beispiel-pressemitteilung.html" "#pressemitteilung"
+
+  touch "${MARKER_DIR}/content.done"
+  echo "Inhalte angelegt."
+fi
+
+# 6) Session-Login für routes & Code-Injection (falls noch nicht vorhanden)
+if [ ! -f "${MARKER_DIR}/session.done" ]; then
+  echo "[6] Session-Login (für routes/Code-Injection) ..."
+  rm -f "${COOKIE_JAR}"
+  curl -sSf -c "${COOKIE_JAR}" -X POST "${ORIGIN}/ghost/api/admin/session/" \
+    -H "Origin: ${ORIGIN}" \
+    -H "Accept-Version: ${ACCEPT_VERSION}" \
+    -H "Content-Type: application/json" \
+    --data "{\"username\":\"${GHOST_SETUP_EMAIL}\",\"password\":\"${GHOST_SETUP_PASSWORD}\"}" >/dev/null
+  touch "${MARKER_DIR}/session.done"
+  echo "Session aufgebaut."
+fi
+
+# 7) routes.yaml hochladen
+if [ ! -f "${MARKER_DIR}/routes.done" ]; then
+  echo "[7] Lade routes.yaml hoch ..."
+  curl -sSf -b "${COOKIE_JAR}" -X POST "${ORIGIN}/ghost/api/admin/settings/routes/yaml/" \
+    -H "Origin: ${ORIGIN}" \
+    -H "Accept-Version: ${ACCEPT_VERSION}" \
+    -F "routes=@/bootstrap/routes.yaml" >/dev/null
+  touch "${MARKER_DIR}/routes.done"
+  echo "routes.yaml aktualisiert."
+fi
+
+# 8) Code Injection (Header)
+if [ ! -f "${MARKER_DIR}/codeinj.done" ]; then
+  echo "[8] Setze Code Injection (Header) ..."
+  HEADER_CODE="${CODEINJECTION_HEAD:-<script>window.YT_DATA_URL_PREFIX='/yt-proxy/data';window.YT_THUMBNAIL_URL_PREFIX='/yt-proxy/thumbnail';</script>}"
+  curl -sSf -b "${COOKIE_JAR}" -X PUT "${ORIGIN}/ghost/api/admin/settings/" \
+    -H "Origin: ${ORIGIN}" \
+    -H "Accept-Version: ${ACCEPT_VERSION}" \
+    -H "Content-Type: application/json" \
+    --data "$(jq -n --arg code "$HEADER_CODE" '{settings:[{key:"codeinjection_head", value:$code}]}')" >/dev/null
+  touch "${MARKER_DIR}/codeinj.done"
+  echo "Header-Injection gesetzt."
+fi
+
+echo "Bootstrap abgeschlossen."

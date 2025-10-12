@@ -1,26 +1,4 @@
 services:
-  seed-db:
-    image: alpine:3.20
-    container_name: ${CONTAINER_NAME_PREFIX}-seed-db
-    command: >
-      sh -c '
-      set -e;
-      if [ ! -f /var/lib/ghost/content/data/ghost.db ]; then
-        echo "[seed-db] Kopiere initiale ghost.db...";
-        mkdir -p /var/lib/ghost/content/data &&
-        cp /bootstrap/ghost.db /var/lib/ghost/content/data/ghost.db &&
-        echo "[seed-db] ghost.db bereitgestellt.";
-      else
-        echo "[seed-db] ghost.db existiert bereits, überspringe.";
-      fi
-      '
-    volumes:
-      - ./bootstrap:/bootstrap:ro
-      - ./content:/var/lib/ghost/content
-    restart: "no"
-    networks:
-      - default
-
   redis:
     container_name: ${CONTAINER_NAME_PREFIX}-redis
     image: redis:7-alpine
@@ -52,10 +30,8 @@ services:
     container_name: ${CONTAINER_NAME_PREFIX}-ghost
     image: ghost:latest
     depends_on:
-      seed-db:
-        condition: service_completed_successfully
       redis:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
     env_file:
       - .env
@@ -64,8 +40,10 @@ services:
       url: https://${DOMAIN}
       server__host: "::"
       server__port: "2368"
+      # Datenbank
       database__client: sqlite3
       database__connection__filename: /var/lib/ghost/content/data/ghost.db
+      # Mail
       mail__transport: ${GHOST_MAIL_TRANSPORT}
       mail__from: ${GHOST_MAIL_FROM}
       mail__options__service: ${GHOST_MAIL_SERVICE}
@@ -73,6 +51,7 @@ services:
       mail__options__port: ${GHOST_MAIL_PORT}
       mail__options__auth__user: ${GHOST_MAIL_USER}
       mail__options__auth__pass: ${GHOST_MAIL_PASS}
+      # HTTP-Caching (Ghost-intern)
       caching__frontend__maxAge: ${GHOST_CACHE_FRONTEND_MAXAGE}
       caching__contentAPI__maxAge: ${GHOST_CACHE_CONTENTAPI_MAXAGE}
       caching__robotstxt__maxAge: ${GHOST_CACHE_ROBOTSTXT_MAXAGE}
@@ -83,6 +62,7 @@ services:
       caching__publicAssets__maxAge: ${GHOST_CACHE_PUBLICASSETS_MAXAGE}
       caching__301__maxAge: ${GHOST_CACHE_301_MAXAGE}
       caching__customRedirects__maxAge: ${GHOST_CACHE_CUSTOMREDIRECTS_MAXAGE}
+      # Redis-Cache
       cache__type: ${GHOST_CACHE_TYPE}
       cache__redis__host: ${GHOST_CACHE_REDIS_HOST}
       cache__redis__port: ${GHOST_CACHE_REDIS_PORT}
@@ -96,6 +76,7 @@ services:
       cache__redis__storeConfig__lazyConnect: ${GHOST_CACHE_REDIS_LAZYCONNECT}
       cache__redis__storeConfig__enableOfflineQueue: ${GHOST_CACHE_REDIS_ENABLEOFFLINEQUEUE}
       cache__redis__storeConfig__maxRetriesPerRequest: ${GHOST_CACHE_REDIS_MAXRETRIES}
+      # HostSettings
       hostSettings__postsPublicCache__enabled: "true"
       hostSettings__linkRedirectsPublicCache__enabled: "true"
     volumes:
@@ -112,12 +93,14 @@ services:
       start_period: 30s
     labels:
       - "traefik.enable=true"
+      # HTTP=>HTTPS
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`) && !PathPrefix(`/.ghost/activitypub/`) && !Path(`/.well-known/webfinger`) && !Path(`/.well-known/nodeinfo`)"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.entrypoints=http"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.service=${CONTAINER_NAME_PREFIX}-ghost"
       - "traefik.http.middlewares.${CONTAINER_NAME_PREFIX}-redirect-to-https.redirectscheme.scheme=https"
       - "traefik.http.middlewares.${CONTAINER_NAME_PREFIX}-redirect-to-https.redirectscheme.permanent=true"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.middlewares=${CONTAINER_NAME_PREFIX}-redirect-to-https"
+      # HTTPS Ghost
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`) && !PathPrefix(`/.ghost/activitypub/`) && !Path(`/.well-known/webfinger`) && !Path(`/.well-known/nodeinfo`)"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.entrypoints=https"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.service=${CONTAINER_NAME_PREFIX}-ghost"
@@ -127,6 +110,7 @@ services:
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.tls.certresolver=http"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.middlewares=compresstraefik"
       - "traefik.http.middlewares.compresstraefik.compress=true"
+      # ActivityPub HTTPS passthrough
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.entrypoints=https"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.rule=Host(`${DOMAIN}`) && (PathPrefix(`/.ghost/activitypub/`) || Path(`/.well-known/webfinger`) || Path(`/.well-known/nodeinfo`))"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.service=${CONTAINER_NAME_PREFIX}-ghost-activitypub"
@@ -136,25 +120,23 @@ services:
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.tls.certresolver=http"
       - "traefik.docker.network=proxy"
 
-  ghost-bootstrap:
+  bootstrap:
     container_name: ${CONTAINER_NAME_PREFIX}-bootstrap
     build:
       context: ./bootstrap
-      dockerfile: Dockerfile
-    image: ${CONTAINER_NAME_PREFIX}/ghost-bootstrap:latest
+    image: hutt/spectre:latest
+    restart: "no"
     env_file:
       - .env
     volumes:
-      - ./bootstrap:/bootstrap:ro
-      - ./content:/var/lib/ghost/content
-      - ./config.production.json:/var/lib/ghost/config.production.json:ro
+      - ./bootstrap/routes.yaml:/bootstrap/routes.yaml:ro
+      - ./bootstrap/pages:/bootstrap/pages:ro
+      - ./bootstrap/posts:/bootstrap/posts:ro
     depends_on:
       ghost:
         condition: service_healthy
-    restart: "no"
     networks:
       - default
-      - proxy
 
   proxy:
     container_name: ${CONTAINER_NAME_PREFIX}-proxy
