@@ -2,8 +2,7 @@
 set -euo pipefail
 
 # Basis-URL für interne Service-Kommunikation (Traefik umgehen)
-BASE_URL="${GHOST_ADMIN_URL:-http://ghost:2368}"
-
+BASE_URL="http://ghost:2368"
 COOKIE="$(mktemp)"
 ROUTES_FILE="/bootstrap/routes.yaml"
 GENERATED_KEYS_FILE="/bootstrap/generated.keys.env"
@@ -28,41 +27,7 @@ wait_for_ghost() {
   exit 1
 }
 
-# CSRF-Token aus Response-Headern ziehen (Ghost 6+ setzt X-CSRF-Token im Header)
-get_csrf() {
-  log "Hole CSRF-Token ..."
-  local headers token
-  headers="$(mktemp)"
-
-  # 1) /site anfragen
-  curl -s -D "$headers" -o /dev/null \
-       -c "$COOKIE" -b "$COOKIE" \
-       -H "Accept: application/json" \
-       -H "User-Agent: $UA" \
-       "${BASE_URL}/ghost/api/admin/site/"
-
-  token="$(awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="x-csrf-token"{gsub(/\r/,"",$2);print $2}' "$headers" || true)"
-
-  # 2) Fallback: /users/me
-  if [ -z "${token:-}" ]; then
-    curl -s -D "$headers" -o /devnull \
-         -c "$COOKIE" -b "$COOKIE" \
-         -H "Accept: application/json" \
-         -H "User-Agent: $UA" \
-         "${BASE_URL}/ghost/api/admin/users/me/" || true
-    token="$(awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="x-csrf-token"{gsub(/\r/,"",$2);print $2}' "$headers" || true)"
-  fi
-
-  if [ -z "${token:-}" ]; then
-    log "Kein CSRF-Token im Header gefunden."
-    exit 1
-  fi
-
-  echo "$token"
-}
-
 setup_needed() {
-  # Wenn Setup-Endpoint 404 liefert, ist Ghost bereits eingerichtet.
   local code
   code=$(curl -s -o /dev/null -w "%{http_code}" -c "$COOKIE" -b "$COOKIE" \
     -H "Accept: application/json" -H "User-Agent: $UA" \
@@ -75,12 +40,11 @@ setup_needed() {
 }
 
 do_setup() {
-  local csrf="$1"
   log "Führe Initial-Setup durch ..."
+  # Setup braucht KEINEN CSRF-Token!
   curl -s -c "$COOKIE" -b "$COOKIE" \
     -H "Content-Type: application/json" \
     -H "Origin: ${BASE_URL}" \
-    -H "X-CSRF-Token: ${csrf}" \
     -H "User-Agent: $UA" \
     -X POST \
     -d "$(jq -n --arg n "$GHOST_SETUP_NAME" \
@@ -90,6 +54,73 @@ do_setup() {
           '{setup:[{name:$n,email:$e,password:$p,blogTitle:$t}]}')" \
     "${BASE_URL}/ghost/api/admin/authentication/setup/" >/dev/null
   log "Setup abgeschlossen."
+}
+
+get_csrf() {
+  log "Hole CSRF-Token ..."
+  local headers token
+  headers="$(mktemp)"
+
+  curl -s -D "$headers" -o /dev/null \
+       -c "$COOKIE" -b "$COOKIE" \
+       -H "Accept: application/json" \
+       -H "User-Agent: $UA" \
+       "${BASE_URL}/ghost/api/admin/site/"
+
+  token="$(awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="x-csrf-token"{gsub(/\r/,"",$2);print $2}' "$headers" || true)"
+
+  if [ -z "${token:-}" ]; then
+    log "Kein CSRF-Token im Header gefunden."
+    exit 1
+  fi
+
+  echo "$token"
+}
+
+create_or_get_integration() {
+  local csrf="$1" name="${2:-Bootstrap Integration}"
+  
+  # Bestehende Integrationen lesen
+  local existing id
+  existing=$(curl -s -c "$COOKIE" -b "$COOKIE" \
+    -H "Accept: application/json" \
+    -H "X-CSRF-Token: ${csrf}" \
+    -H "Origin: ${BASE_URL}" \
+    -H "User-Agent: $UA" \
+    "${BASE_URL}/ghost/api/admin/integrations/?limit=all" || true)
+
+  id=$(echo "$existing" | jq -r --arg n "$name" '.integrations[]? | select(.name==$n) | .id' 2>/dev/null || true)
+
+  if [ -n "${id:-}" ] && [ "$id" != "null" ]; then
+    log "Integration '$name' existiert bereits (id=$id)."
+    echo "$existing" | jq -r --arg n "$name" '
+      .integrations[] | select(.name==$n) |
+      {
+        name, id,
+        admin_api_key: (.api_keys[]? | select(.type=="admin") | .secret),
+        content_api_key: (.api_keys[]? | select(.type=="content") | .secret)
+      }'
+    return 0
+  fi
+
+  log "Erstelle Integration '$name' …"
+  local resp
+  resp=$(curl -s -c "$COOKIE" -b "$COOKIE" \
+    -H "Content-Type: application/json" \
+    -H "Origin: ${BASE_URL}" \
+    -H "X-CSRF-Token: ${csrf}" \
+    -H "User-Agent: $UA" \
+    -X POST \
+    -d "$(jq -n --arg n "$name" '{integrations:[{name:$n}]}')" \
+    "${BASE_URL}/ghost/api/admin/integrations/")
+
+  echo "$resp" | jq -r '
+    .integrations[0] |
+    {
+      name, id,
+      admin_api_key: (.api_keys[]? | select(.type=="admin") | .secret),
+      content_api_key: (.api_keys[]? | select(.type=="content") | .secret)
+    }'
 }
 
 download_theme() {
@@ -142,6 +173,24 @@ create_or_get_integration() {
       admin_api_key: (.api_keys[]? | select(.type=="admin") | .secret),
       content_api_key: (.api_keys[]? | select(.type=="content") | .secret)
     }'
+}
+
+# JWT-Token aus Admin API Key generieren
+generate_jwt_token() {
+  local api_key="$1"
+  local id secret
+  IFS=':' read -r id secret <<< "$api_key"
+  
+  local now exp header payload signature
+  now=$(date +%s)
+  exp=$((now + 300))  # 5 Minuten
+  
+  header=$(echo -n '{"alg":"HS256","typ":"JWT","kid":"'$id'"}' | base64 | tr -d '=' | tr '+' '-' | tr '/' '_')
+  payload=$(echo -n '{"iat":'$now',"exp":'$exp',"aud":"/admin/"}' | base64 | tr -d '=' | tr '+' '-' | tr '/' '_')
+  
+  signature=$(echo -n "${header}.${payload}" | openssl dgst -binary -sha256 -mac HMAC -macopt hexkey:"$secret" | base64 | tr -d '=' | tr '+' '-' | tr '/' '_')
+  
+  echo "${header}.${payload}.${signature}"
 }
 
 persist_keys() {
@@ -391,37 +440,40 @@ update_navigation() {
 
 main() {
   wait_for_ghost
-  load_generated_keys
 
-  local csrf=""
-
-  # Falls Setup nötig: einmalige Einrichtung (Owner & Blogtitel)
   if [ "$(setup_needed)" = "yes" ]; then
-    csrf="$(get_csrf)"
-    do_setup "$csrf"
+    # Setup OHNE CSRF
+    do_setup
 
-    # Nach Setup: frischen CSRF holen (neue Session möglich)
+    # Nach Setup: CSRF holen für Integration-Erstellung
     csrf="$(get_csrf)"
 
-    # Integration anlegen und Keys speichern
-    local keys_json
+    # Integration anlegen
     keys_json="$(create_or_get_integration "$csrf" "Bootstrap Integration")"
-    persist_keys "$keys_json" "$GENERATED_KEYS_FILE"
-
-    # Admin-Key in diese Laufzeit übernehmen
-    export GHOST_ADMIN_API_KEY
-    GHOST_ADMIN_API_KEY="$(echo "$keys_json" | jq -r '.admin_api_key')"
+    
+    # Admin-Key extrahieren und JWT generieren
+    ADMIN_KEY=$(echo "$keys_json" | jq -r '.admin_api_key')
+    export GHOST_ADMIN_API_KEY="$ADMIN_KEY"
+    
+    log "Verwende Admin API Key für weitere Requests."
   else
-    # Kein Setup nötig – verwende ggf. bereits generierte Keys oder .env
-    if [ -z "${GHOST_ADMIN_API_KEY:-}" ]; then
-      log "Warnung: Kein GHOST_ADMIN_API_KEY gefunden. Einige Admin-Calls könnten ohne Key fehlschlagen."
-      csrf="$(get_csrf)" || true
+    log "Setup bereits durchgeführt."
+    # Versuche gespeicherte Keys zu laden oder exit
+    if [ ! -f "$GENERATED_KEYS_FILE" ]; then
+      log "Kein Setup nötig, aber keine API Keys gefunden."
+      exit 1
     fi
+    source "$GENERATED_KEYS_FILE"
+    export GHOST_ADMIN_API_KEY="${GHOST_ADMIN_API_KEY}"
   fi
 
+  # Ab hier alle API-Calls mit JWT-Token
+  JWT_TOKEN="$(generate_jwt_token "$GHOST_ADMIN_API_KEY")"
+
+  # Download und Upload Theme mit JWT
   download_theme
-  theme_name="$(upload_theme "${csrf:-}")"
-  [ -n "$theme_name" ] && activate_theme "${csrf:-}" "$theme_name"
+  theme_name="$(upload_theme_with_jwt "$JWT_TOKEN")"
+  [ -n "$theme_name" ] && activate_theme_with_jwt "$JWT_TOKEN" "$theme_name"
 
   upload_routes "${csrf:-}"
   update_navigation "${csrf:-}"
