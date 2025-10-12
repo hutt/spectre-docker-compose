@@ -33,9 +33,6 @@ git clone https://github.com/hutt/spectre-docker-compose.git meine-website.de &&
 cp example.env .env
 nano .env # Anpassen: Domain, E-Mail, Passwort, Blog-Titel...
 
-# Docker Image bauen
-docker compose build ghost-bootstrap
-
 # Deps starten und Container hochfahren:
 docker compose up -d
 

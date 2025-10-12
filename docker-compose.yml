@@ -1,5 +1,6 @@
+version: "3.8"
+
 services:
-  # 1) Kopiert die vorbereitete DB einmalig vor dem ersten Ghost-Start
   seed-db:
     image: alpine:3.20
     container_name: ${CONTAINER_NAME_PREFIX}-seed-db
@@ -22,7 +23,6 @@ services:
     networks:
       - default
 
-  # 2) Redis (unverändert)
   redis:
     container_name: ${CONTAINER_NAME_PREFIX}-redis
     image: redis:7-alpine
@@ -50,7 +50,6 @@ services:
     networks:
       - default
 
-  # 3) Ghost (Traefik-Labels und Umgebungen wie gehabt)
   ghost:
     container_name: ${CONTAINER_NAME_PREFIX}-ghost
     image: ghost:latest
@@ -67,10 +66,8 @@ services:
       url: https://${DOMAIN}
       server__host: "::"
       server__port: "2368"
-      # Database
       database__client: sqlite3
       database__connection__filename: /var/lib/ghost/content/data/ghost.db
-      # Mail
       mail__transport: ${GHOST_MAIL_TRANSPORT}
       mail__from: ${GHOST_MAIL_FROM}
       mail__options__service: ${GHOST_MAIL_SERVICE}
@@ -78,7 +75,6 @@ services:
       mail__options__port: ${GHOST_MAIL_PORT}
       mail__options__auth__user: ${GHOST_MAIL_USER}
       mail__options__auth__pass: ${GHOST_MAIL_PASS}
-      # HTTP-Caching (Ghost-internal)
       caching__frontend__maxAge: ${GHOST_CACHE_FRONTEND_MAXAGE}
       caching__contentAPI__maxAge: ${GHOST_CACHE_CONTENTAPI_MAXAGE}
       caching__robotstxt__maxAge: ${GHOST_CACHE_ROBOTSTXT_MAXAGE}
@@ -89,7 +85,6 @@ services:
       caching__publicAssets__maxAge: ${GHOST_CACHE_PUBLICASSETS_MAXAGE}
       caching__301__maxAge: ${GHOST_CACHE_301_MAXAGE}
       caching__customRedirects__maxAge: ${GHOST_CACHE_CUSTOMREDIRECTS_MAXAGE}
-      # Redis-Cache
       cache__type: ${GHOST_CACHE_TYPE}
       cache__redis__host: ${GHOST_CACHE_REDIS_HOST}
       cache__redis__port: ${GHOST_CACHE_REDIS_PORT}
@@ -103,7 +98,6 @@ services:
       cache__redis__storeConfig__lazyConnect: ${GHOST_CACHE_REDIS_LAZYCONNECT}
       cache__redis__storeConfig__enableOfflineQueue: ${GHOST_CACHE_REDIS_ENABLEOFFLINEQUEUE}
       cache__redis__storeConfig__maxRetriesPerRequest: ${GHOST_CACHE_REDIS_MAXRETRIES}
-      # Host Settings
       hostSettings__postsPublicCache__enabled: "true"
       hostSettings__linkRedirectsPublicCache__enabled: "true"
     volumes:
@@ -120,14 +114,12 @@ services:
       start_period: 30s
     labels:
       - "traefik.enable=true"
-      # HTTP=>HTTPS Redirect
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`) && !PathPrefix(`/.ghost/activitypub/`) && !Path(`/.well-known/webfinger`) && !Path(`/.well-known/nodeinfo`)"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.entrypoints=http"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.service=${CONTAINER_NAME_PREFIX}-ghost"
       - "traefik.http.middlewares.${CONTAINER_NAME_PREFIX}-redirect-to-https.redirectscheme.scheme=https"
       - "traefik.http.middlewares.${CONTAINER_NAME_PREFIX}-redirect-to-https.redirectscheme.permanent=true"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.middlewares=${CONTAINER_NAME_PREFIX}-redirect-to-https"
-      # HTTPS Ghost
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`) && !PathPrefix(`/.ghost/activitypub/`) && !Path(`/.well-known/webfinger`) && !Path(`/.well-known/nodeinfo`)"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.entrypoints=https"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.service=${CONTAINER_NAME_PREFIX}-ghost"
@@ -137,7 +129,6 @@ services:
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.tls.certresolver=http"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.middlewares=compresstraefik"
       - "traefik.http.middlewares.compresstraefik.compress=true"
-      # ActivityPub HTTPS
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.entrypoints=https"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.rule=Host(`${DOMAIN}`) && (PathPrefix(`/.ghost/activitypub/`) || Path(`/.well-known/webfinger`) || Path(`/.well-known/nodeinfo`))"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.service=${CONTAINER_NAME_PREFIX}-ghost-activitypub"
@@ -147,7 +138,6 @@ services:
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.tls.certresolver=http"
       - "traefik.docker.network=proxy"
 
-  # 4) Bootstrap: Erkennt DB-Zustand; richtet bei vorhandener DB alles via Admin-API ein
   ghost-bootstrap:
     container_name: ${CONTAINER_NAME_PREFIX}-bootstrap
     build:
@@ -168,55 +158,6 @@ services:
       - default
       - proxy
 
-  # 5) Restart-Helper (Sidecar) ohne Docker-Socket/Health:
-  #    Erkennt routes.yaml und triggert minimalen GET auf /ghost/api/admin/settings/
-  restart-helper:
-    image: alpine:3.20
-    container_name: ${CONTAINER_NAME_PREFIX}-restart-helper
-    command: >
-      sh -c '
-      set -e;
-      echo "[restart-helper] Warte auf routes.yaml...";
-      while [ ! -f /var/lib/ghost/content/settings/routes.yaml ]; do
-        sleep 2;
-      done;
-      echo "[restart-helper] routes.yaml erkannt. Sende minimalen GET an /ghost/api/admin/settings/ ...";
-      i=0; ok=0;
-      while [ $i -lt 5 ]; do
-        if wget -qO- http://ghost:2368/ghost/api/admin/settings/ >/dev/null 2>&1; then
-          ok=1; break;
-        fi;
-        sleep 2; i=$((i+1));
-      done;
-      if [ $ok -eq 1 ]; then
-        echo "[restart-helper] GET erfolgreich gesendet (keine Reload-Garantie).";
-      else
-        echo "[restart-helper] GET fehlgeschlagen (weiter ohne Reload).";
-      fi;
-      # Änderungen erkennen und erneut GET senden
-      while true; do
-        if [ -f /var/lib/ghost/content/settings/routes.yaml ]; then
-          # grobe Änderungserkennung über mtime
-          TS_CUR=$(stat -c %Y /var/lib/ghost/content/settings/routes.yaml 2>/dev/null || echo 0);
-          if [ "${TS_LAST:-0}" != "$TS_CUR" ]; then
-            TS_LAST="$TS_CUR";
-            echo "[restart-helper] Änderung an routes.yaml erkannt. Sende erneuten GET ...";
-            wget -qO- http://ghost:2368/ghost/api/admin/settings/ >/dev/null 2>&1 || true;
-          fi;
-        fi;
-        sleep 3;
-      done
-      '
-    volumes:
-      - ./content:/var/lib/ghost/content
-    depends_on:
-      ghost:
-        condition: service_started
-    restart: unless-stopped
-    networks:
-      - default
-
-  # 6) Proxy (unverändert)
   proxy:
     container_name: ${CONTAINER_NAME_PREFIX}-proxy
     image: nginx:alpine

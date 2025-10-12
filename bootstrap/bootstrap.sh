@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================
-# Ghost Bootstrap – Auto-Install, idempotent
+# Ghost Bootstrap – Auto-Install, idempotent (Staff-Token only)
 # ============================================
 
 # Required ENV:
@@ -11,20 +11,42 @@ set -euo pipefail
 # - GHOST_SETUP_EMAIL
 # - GHOST_SETUP_NAME
 # - GHOST_SETUP_BLOG_TITLE
-# - Optional: BOOTSTRAP_CLEANUP_INTEGRATION=true|false
+# Optional:
+# - BOOTSTRAP_CLEANUP_INTEGRATION=true|false (hat hier keine Wirkung mehr, da keine Integration genutzt wird)
 
 BASE_URL="https://${DOMAIN}"
-UA="Ghost-Bootstrap/1.0"
+UA="Ghost-Bootstrap/2.0"
 DB_PATH="/var/lib/ghost/content/data/ghost.db"
 ROUTES_SRC="/bootstrap/routes.yaml"
 ROUTES_DST="/var/lib/ghost/content/settings/routes.yaml"
 TMP_DIR="/tmp/ghost-bootstrap"
 SPECTRE_ZIP="${TMP_DIR}/spectre.zip"
+FIRST_SETUP_FILE="/bootstrap/first_setup"
 
 mkdir -p "${TMP_DIR}"
 
 log() {
   printf '%s %s\n' "$(date +'%F %T')" "$*" >&2
+}
+
+# Staff Access Token aus first_setup einlesen (falls vorhanden)
+STAFF_ACCESS_TOKEN=""
+if [ -f "${FIRST_SETUP_FILE}" ]; then
+  STAFF_ACCESS_TOKEN="$(tr -d ' \n\r' <"${FIRST_SETUP_FILE}" || true)"
+  if [ -n "${STAFF_ACCESS_TOKEN}" ]; then
+    log "STAFF_ACCESS_TOKEN aus ${FIRST_SETUP_FILE} geladen."
+  else
+    log "Warnung: ${FIRST_SETUP_FILE} ist leer – STAFF_ACCESS_TOKEN nicht gesetzt."
+  fi
+else
+  log "Hinweis: ${FIRST_SETUP_FILE} nicht gefunden – STAFF_ACCESS_TOKEN nicht gesetzt."
+fi
+
+require_staff_token() {
+  if [ -z "${STAFF_ACCESS_TOKEN}" ]; then
+    log "ERROR: Kein STAFF_ACCESS_TOKEN verfügbar. Vorgang kann nicht fortgesetzt werden."
+    exit 1
+  fi
 }
 
 # ---------------------------
@@ -36,7 +58,6 @@ retry() {
   local delay=$1; shift
   local attempt=1
   local rc=0
-
   while true; do
     if "$@"; then
       return 0
@@ -71,50 +92,13 @@ detect_api_version() {
 }
 
 # ---------------------------
-# Read Admin API Key from SQLite
+# Admin API caller (Staff Token only)
 # ---------------------------
-read_admin_key_from_db() {
-  if ! db_exists; then
-    echo ""
-    return 1
-  fi
-  local row
-  row=$(sqlite3 "$DB_PATH" "
-    SELECT ak.id||':'||ak.secret
-    FROM api_keys ak
-    JOIN integrations i ON i.id = ak.integration_id
-    WHERE ak.type='admin' AND i.name='api'
-    ORDER BY ak.created_at DESC LIMIT 1;")
-  if [ -z "$row" ]; then
-    row=$(sqlite3 "$DB_PATH" "
-      SELECT ak.id||':'||ak.secret
-      FROM api_keys ak
-      WHERE ak.type='admin'
-      ORDER BY ak.created_at DESC LIMIT 1;")
-  fi
-  [ -z "$row" ] && return 1
-  printf "%s" "$row"
-}
-
-# ---------------------------
-# Generate JWT for Admin API
-# ---------------------------
-generate_jwt() {
-  local key=$1 id secret now exp header payload signature
-  IFS=':' read -r id secret <<< "$key"
-  now=$(date +%s); exp=$((now+300))
-  header=$(printf '{"alg":"HS256","typ":"JWT","kid":"%s"}' "$id" | openssl base64 -A | tr '/+' '_-' | tr -d '=')
-  payload=$(printf '{"iat":%s,"exp":%s,"aud":"/admin/"}' "$now" "$exp" | openssl base64 -A | tr '/+' '_-' | tr -d '=')
-  signature=$(printf '%s.%s' "$header" "$payload" \
-    | openssl dgst -sha256 -binary -mac HMAC -macopt hexkey:"$secret" \
-    | openssl base64 -A | tr '/+' '_-' | tr -d '=')
-  JWT_TOKEN="${header}.${payload}.${signature}"
-}
-
-api_jwt() {
+api_admin() {
   local method=$1 path=$2 body=${3:-}
+  require_staff_token
   curl -sSf \
-    -H "Authorization: Ghost ${JWT_TOKEN}" \
+    -H "Authorization: Bearer ${STAFF_ACCESS_TOKEN}" \
     -H "Content-Type: application/json" \
     -H "Accept-Version: ${GHOST_API_VERSION}" \
     -H "User-Agent: ${UA}" \
@@ -131,8 +115,9 @@ download_theme() {
 }
 
 upload_theme() {
+  require_staff_token
   curl -sS \
-    -H "Authorization: Ghost ${JWT_TOKEN}" \
+    -H "Authorization: Bearer ${STAFF_ACCESS_TOKEN}" \
     -H "Accept-Version: ${GHOST_API_VERSION}" \
     -H "User-Agent: ${UA}" \
     -F "file=@${SPECTRE_ZIP}" \
@@ -141,14 +126,14 @@ upload_theme() {
 
 activate_theme() {
   local theme_name="$1"
-  api_jwt PUT "/themes/${theme_name}/activate/" '{}'
+  api_admin PUT "/themes/${theme_name}/activate/" '{}'
 }
 
 # ---------------------------
-# Navigation
+# Navigation (Staff-only)
 # ---------------------------
 set_navigation() {
-  api_jwt PUT /settings/ '{
+  api_admin PUT /settings/ '{
     "settings":[
       {"key":"navigation","value":[
         {"label":"Start","url":"/"},
@@ -171,37 +156,30 @@ escape_html_file() {
   sed ':a;N;$!ba;s/\n/\\n/g; s/"/\\"/g' "$1"
 }
 
-# Platzhalter-Ersetzungen in temporäre Dateien anwenden
 prepare_pages_with_substitutions() {
   local year_now date_now
   year_now=$(date '+%Y')
   date_now=$(date '+%d.%m.%Y')
 
-  # Start
   sed -e "s|\\[BLOGTITLE\\]|${GHOST_SETUP_BLOG_TITLE}|g" \
     /bootstrap/pages/start.html > /tmp/start.html
 
-  # Impressum
   sed -e "s|\\[Vorname Nachname\\]|${GHOST_SETUP_NAME}|g" \
       -e "s|\\[EMAIL\\]|${GHOST_SETUP_EMAIL}|g" \
       -e "s|\\[DOMAIN\\]|${DOMAIN}|g" \
       -e "s|\\[JAHR\\]|${year_now}|g" \
     /bootstrap/pages/impressum.html > /tmp/impressum.html
 
-  # Datenschutz
   sed -e "s|\\[Vorname Nachname\\]|${GHOST_SETUP_NAME}|g" \
       -e "s|\\[DATUM\\]|${date_now}|g" \
     /bootstrap/pages/datenschutz.html > /tmp/datenschutz.html
 
-  # Presse
   sed -e "s|\\[EMAIL\\]|${GHOST_SETUP_EMAIL}|g" \
     /bootstrap/pages/presse.html > /tmp/presse.html
 
-  # Beispielseite
   sed -e "s|\\[Vorname Nachname\\]|${GHOST_SETUP_NAME}|g" \
     /bootstrap/pages/beispielseite.html > /tmp/beispielseite.html
 
-  # Pressemitteilung Post
   sed -e "s|\\[EMAIL\\]|${GHOST_SETUP_EMAIL}|g" \
     /bootstrap/posts/beispiel-pressemitteilung.html > /tmp/beispiel-pressemitteilung.html
 }
@@ -215,7 +193,7 @@ create_page_if_missing() {
     --arg h "$(escape_html_file "$file")" \
     --arg e "$GHOST_SETUP_EMAIL" \
     '{pages:[{title:$t,slug:$s,status:"published",html:$h,authors:[{email:$e}]}]}')
-  api_jwt POST /pages/ "$body" >/dev/null || true
+  api_admin POST /pages/ "$body" >/dev/null || true
 }
 
 create_post_if_missing() {
@@ -228,7 +206,7 @@ create_post_if_missing() {
     --arg e "$GHOST_SETUP_EMAIL" \
     --argjson tg "$tags_json" \
     '{posts:[{title:$t,slug:$s,status:"published",html:$h,authors:[{email:$e}],tags:$tg}]}')
-  api_jwt POST /posts/ "$body" >/dev/null || true
+  api_admin POST /posts/ "$body" >/dev/null || true
 }
 
 # ---------------------------
@@ -240,22 +218,36 @@ deploy_routes() {
 }
 
 # ---------------------------
-# Integration cleanup
+# Delete user with slug "superuser" if present
 # ---------------------------
-delete_bootstrap_integration() {
-  local iid
-  iid=$(sqlite3 "$DB_PATH" "
-    SELECT i.id
-    FROM integrations i
-    JOIN api_keys ak ON ak.integration_id = i.id
-    WHERE i.name='Bootstrap Integration'
-    ORDER BY i.created_at DESC LIMIT 1;")
-  [ -z "$iid" ] && { log "CLEANUP: Keine Bootstrap Integration gefunden."; return 0; }
-  api_jwt DELETE "/integrations/${iid}/" >/dev/null || {
-    log "CLEANUP: DELETE /integrations/${iid} fehlgeschlagen (ggf. bereits entfernt)."
-    return 0
-  }
-  log "CLEANUP: Bootstrap Integration gelöscht (id=${iid})."
+delete_superuser() {
+  log "CLEANUP: Suche User 'superuser' zum Löschen..."
+  local users_json user_id
+  users_json=$(api_admin GET "/users/?filter=slug:superuser&limit=1") || users_json=""
+  user_id=$(echo "$users_json" | jq -r '.users[0].id // empty' 2>/dev/null || echo "")
+  if [ -n "${user_id}" ]; then
+    log "CLEANUP: Superuser gefunden (id=${user_id}), lösche..."
+    api_admin DELETE "/users/${user_id}/" >/dev/null || {
+      log "CLEANUP: Löschen des Superuser fehlgeschlagen."
+      return 1
+    }
+    log "CLEANUP: Superuser gelöscht."
+  else
+    log "CLEANUP: Kein Superuser zum Löschen gefunden."
+  fi
+}
+
+# ---------------------------
+# Remove first_setup token file
+# ---------------------------
+delete_first_setup_file() {
+  if [ -f "${FIRST_SETUP_FILE}" ]; then
+    rm -f "${FIRST_SETUP_FILE}" || {
+      log "CLEANUP: Konnte ${FIRST_SETUP_FILE} nicht löschen."
+      return 1
+    }
+    log "CLEANUP: ${FIRST_SETUP_FILE} gelöscht."
+  fi
 }
 
 # ---------------------------
@@ -264,20 +256,21 @@ delete_bootstrap_integration() {
 main() {
   log "=== Ghost Bootstrap START ==="
 
+  # Early exit if DB missing
   if ! db_exists; then
     log "Keine DB gefunden (${DB_PATH}). Installation noch nicht bereit. Beende ohne Fehler."
     exit 0
   fi
 
-  # Standard Retry-Limit (nicht erhöht)
+  # Wait for Ghost admin site endpoint
   log "Warte auf Ghost Admin Endpoint..."
   retry 10 1 curl -fsS -H "X-Forwarded-Proto: https" "${BASE_URL}/ghost/api/admin/site/" >/dev/null
 
   detect_api_version
 
-  local admin_key
-  admin_key=$(read_admin_key_from_db) || { log "ERROR: Kein Admin API Key in DB gefunden."; exit 1; }
-  generate_jwt "$admin_key"
+  # Auth erzwingen (Staff only)
+  require_staff_token
+  log "Auth-Modus: STAFF Access Token"
 
   # THEME
   log "[THEME] Lade Theme ZIP..."
@@ -300,41 +293,9 @@ main() {
     log "[THEME] Kein Theme-Name aus der Upload-Antwort ermittelt (ggf. bereits vorhanden oder anderer Fehler)."
   fi
 
-  # NAV
+  # NAV (Staff)
   log "[NAV] Setze Navigation..."
   retry 3 1 set_navigation
 
-  # PAGES/POSTS mit Ersetzungen
-  prepare_pages_with_substitutions
-
-  log "[PAGES] Erstelle statische Seiten..."
-  create_page_if_missing "start" "Start" "/tmp/start.html"
-  create_page_if_missing "impressum" "Impressum" "/tmp/impressum.html"
-  create_page_if_missing "datenschutz" "Datenschutzerklärung" "/tmp/datenschutz.html"
-  create_page_if_missing "presse" "Presse" "/tmp/presse.html"
-  create_page_if_missing "beispielseite" "Beispielseite" "/tmp/beispielseite.html"
-
-  log "[POSTS] Erstelle Beispiel-Posts..."
-  create_post_if_missing "beispiel-post" "Beispiel-Blogpost" "/bootstrap/posts/beispiel-post.html" "[]"
-  create_post_if_missing "beispiel-pressemitteilung" "Beispiel-Pressemitteilung" "/tmp/beispiel-pressemitteilung.html" '[{"name":"#pressemitteilung"}]'
-
-  # ROUTES
-  log "[ROUTES] Kopiere routes.yaml..."
-  deploy_routes
-
-  # CLEANUP INTEGRATION (optional, default true)
-  if [ "${BOOTSTRAP_CLEANUP_INTEGRATION:-true}" = "true" ]; then
-    log "[CLEANUP] Entferne Bootstrap Integration..."
-    delete_bootstrap_integration
-  fi
-
-  # TEMP CLEANUP
-  log "[CLEANUP] Entferne temporäre Dateien..."
-  rm -f "$SPECTRE_ZIP" || true
-  rm -f /tmp/start.html /tmp/impressum.html /tmp/datenschutz.html /tmp/presse.html /tmp/beispielseite.html /tmp/beispiel-pressemitteilung.html || true
-  rmdir "$TMP_DIR" 2>/dev/null || true
-
-  log "=== Ghost Bootstrap FINISHED ==="
-}
-
-main
+  # PAGES/POSTS
+  prepare_pages
