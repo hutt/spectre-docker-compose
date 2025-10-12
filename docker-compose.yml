@@ -95,10 +95,9 @@ services:
     container_name: ${CONTAINER_NAME_PREFIX}-bootstrap
     build:
       context: ./bootstrap
-    image: meine-website/ghost-bootstrap:latest
+    #image: hutt/ghost-spectre:latest
     restart: "no"
     environment:
-      GHOST_ADMIN_URL: ${GHOST_ADMIN_URL}
       GHOST_SETUP_NAME: ${GHOST_SETUP_NAME}
       GHOST_SETUP_EMAIL: ${GHOST_SETUP_EMAIL}
       GHOST_SETUP_PASSWORD: ${GHOST_SETUP_PASSWORD}

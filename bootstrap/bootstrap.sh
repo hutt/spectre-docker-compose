@@ -20,8 +20,16 @@ wait_for_ghost() {
 }
 
 get_csrf() {
+  # Explizit eine neue Session starten
   curl -s -c "$COOKIE" -b "$COOKIE" \
     -H "Accept: application/json" \
+    -H "User-Agent: Mozilla/5.0 (compatible; Ghost-Bootstrap/1.0)" \
+    "${BASE_URL}/ghost/api/admin/site/" >/dev/null
+  
+  # Dann CSRF-Token holen
+  curl -s -c "$COOKIE" -b "$COOKIE" \
+    -H "Accept: application/json" \
+    -H "User-Agent: Mozilla/5.0 (compatible; Ghost-Bootstrap/1.0)" \
     "${BASE_URL}/ghost/api/admin/csrf-token/" \
   | jq -r '.csrf'
 }
@@ -45,6 +53,7 @@ do_setup() {
   curl -s -c "$COOKIE" -b "$COOKIE" \
     -H "Content-Type: application/json" \
     -H "Origin: ${BASE_URL}" \
+    -H "User-Agent: Mozilla/5.0 (compatible; Ghost-Bootstrap/1.0)" \
     -H "X-CSRF-Token: ${csrf}" \
     -X POST \
     -d "$(jq -n --arg n "$GHOST_SETUP_NAME" \
@@ -68,6 +77,7 @@ upload_theme() {
   echo "Lade Theme zu Ghost hoch ..."
   curl -s -c "$COOKIE" -b "$COOKIE" \
     -H "Origin: ${BASE_URL}" \
+    -H "User-Agent: Mozilla/5.0 (compatible; Ghost-Bootstrap/1.0)" \
     -H "X-CSRF-Token: ${csrf}" \
     -F "file=@/tmp/spectre.zip" \
     "${BASE_URL}/ghost/api/admin/themes/upload/" \
@@ -81,6 +91,7 @@ activate_theme() {
   echo "Aktiviere Theme: ${name}"
   curl -s -c "$COOKIE" -b "$COOKIE" \
     -H "Origin: ${BASE_URL}" \
+    -H "User-Agent: Mozilla/5.0 (compatible; Ghost-Bootstrap/1.0)" \
     -H "X-CSRF-Token: ${csrf}" \
     -X PUT \
     "${BASE_URL}/ghost/api/admin/themes/${name}/activate/" >/dev/null
@@ -92,6 +103,7 @@ upload_routes() {
   echo "Importiere routes.yaml ..."
   curl -s -c "$COOKIE" -b "$COOKIE" \
     -H "Origin: ${BASE_URL}" \
+    -H "User-Agent: Mozilla/5.0 (compatible; Ghost-Bootstrap/1.0)" \
     -H "X-CSRF-Token: ${csrf}" \
     -F "file=@${ROUTES_FILE};type=text/yaml" \
     -X PUT \
@@ -104,6 +116,7 @@ update_navigation() {
   curl -s -c "$COOKIE" -b "$COOKIE" \
     -H "Content-Type: application/json" \
     -H "Origin: ${BASE_URL}" \
+    -H "User-Agent: Mozilla/5.0 (compatible; Ghost-Bootstrap/1.0)" \
     -H "X-CSRF-Token: ${csrf}" \
     -X PUT \
     -d '{
@@ -170,6 +183,7 @@ create_page() {
   curl -s -c "$COOKIE" -b "$COOKIE" \
     -H "Content-Type: application/json" \
     -H "Origin: ${BASE_URL}" \
+    -H "User-Agent: Mozilla/5.0 (compatible; Ghost-Bootstrap/1.0)" \
     -H "X-CSRF-Token: ${csrf}" \
     -X POST \
     -d "$jq_data" \
@@ -206,6 +220,7 @@ create_post() {
     curl -s -c "$COOKIE" -b "$COOKIE" \
       -H "Content-Type: application/json" \
       -H "Origin: ${BASE_URL}" \
+      -H "User-Agent: Mozilla/5.0 (compatible; Ghost-Bootstrap/1.0)" \
       -H "X-CSRF-Token: ${csrf}" \
       -X POST \
       -d "$(jq -n \
