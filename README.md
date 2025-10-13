@@ -1,35 +1,37 @@
 # Ghost mit Third-Party-Proxy & Redis-Caching
 
-Dieses Repository enthält eine Docker-Compose-Vorlage für eine datenschutzfreundliche Ghost-Installation. Alle externen Ressourcen (JSDelivr-Bibliotheken, YouTube-Embeds/Thumbnails) werden lokal unter `https://meine-website.de/proxy/…` geproxied und gecached. Ghost nutzt Redis für internes Caching und Traefik für SSL & Routing. 
-
-## Features
-
-✅ **Vollautomatische Einrichtung**: Kein manueller Aufwand im Admin-Interface  
-✅ **Spectre-Theme**: Automatischer Download und Aktivierung  
-✅ **Vorkonfigurierte Inhalte**: 5 statische Seiten + 2 Beispiel-Posts  
-✅ **Smart Routing**: Blog unter `/blog/`, Presse unter `/presse/mitteilungen/`  
-✅ **Datenschutzfreundlich**: Lokaler Proxy für externe Assets (NPM, YouTube)  
-✅ **Redis-Caching**: Optimierte Performance  
-✅ **Traefik-Integration**: SSL und Routing
-✅ **Konfiguration über `.env`**
+Dieses Repository enthält eine Docker-Compose-Vorlage für eine datenschutzfreundliche Ghost-Installation mkit aktiviertem [Spectre-Theme](https://github.com/hutt/spectre). Externe Ressourcen wie JSDelivr-Bibliotheken oder Thumbnails werden über `https://meine-website.de/proxy/…` lokal geproxied und gecached. Ghost nutzt Redis für internes Caching und Traefik für SSL & Routing. 
 
 > [!WARNING]
-> Datenschutzfreundliche YouTube-Embeds funktionieren nur in Kombination mit meinem Theme [Spectre](https://github.com/hutt/spectre/blob/main/README.de.md#datenschutzfreundliche-youtube-video-einbettungen).
+> Dieses Deployment eigenet sich nur für selbstgehostete Ghost-Instanzen. Das einfache Theme für fremdgehostete Ghost-Seiten gibt es [hier](https://github.com/hutt/spectre).
+
+## Features
+✅ **automatische Theme-Installation**: Das [Spectre Theme](https://github.com/hutt/spectre) für Blogs und Websites, die mit der Partei Die Linke zu tun haben, wird automatisch heruntergeladen und aktiviert.  
+✅ **automatische Routen-Installation**: Für gewöhnlich muss man statische Startseiten oder andere für ein Blogging-CMS „außerdewöhnlichere“ Features in Ghost mit einer YAML-Datei konfigurieren. Hier wird die sogenannte `routes.yaml` automatisch [für Spectre konfiguriert](bootstrap/routes.yaml).
+✅ **Datenschutzfreundlich**: Ein lokaler Proxy cached Assets von JSDelivr und YouTube-Embeds ([Hier gibt es mehr Informationen dazu](https://github.com/hutt/spectre/blob/main/README.de.md#datenschutzfreundliche-youtube-video-einbettungen)). 
+✅ **Vorkonfigurierte Inhalte**: 5 Beispiel-Seiten + 2 Beispiel-Posts
+✅ **Redis**: Performance-Optimierung durch vorinstalliertes und -konfiguriertes Datenbank-Caching. 
+✅ **Enthält traefik-Labels**: Diese Docker-Compose enthält Labels zum Deployment mit [traefik](https://traefik.io/). Hier gibt es eine [gute Anleitung für Anfänger](https://goneuland.de/traefik-v3-installation-konfiguration-und-crowdsec-security/).
+✅ **Konfiguration über `.env`-Datei**: Die wichtigsten Einstellungen können über eine Datei mit Umgebungsvariablen gesetzt werden (Vorlage: [example.env](example.env))
+
+> [!IMPORTANT]
+> Datenschutzfreundliche YouTube-Embeds funktionieren nur in Kombination mit meinem Theme Spectre. [Mehr Infos…](https://github.com/hutt/spectre/blob/main/README.de.md#datenschutzfreundliche-youtube-video-einbettungen)
 
 ## Voraussetzungen
 
-- Docker ≥ 20.10, Docker Compose ≥ 1.29  
-- Domain mit DNS-Eintrag auf Ihren Server  
-- Traefik v3 als Ingress (SSL, Compression). Installation:  
-  https://goneuland.de/traefik-v3-installation-konfiguration-und-crowdsec-security/
+- Server mit:
+  - Docker
+  - Docker Compose
+  - Traefik v3 (Bei GoNeuland gibt es eine [sehr gute und ausführliche Installationsanleitung](https://goneuland.de/traefik-v3-installation-konfiguration-und-crowdsec-security/))
+- Domain und DNS-Record, der auf den Server zeigt
 
 ## Schnellstart
 
 ```bash
-# Repository klonen & ins Arbeitsverzeichnis wechseln
+# Repository klonen & ins Arbeitsverzeichnis wechseln (Arbeitsverzeichnis ist hier "meine-website.de")
 git clone https://github.com/hutt/spectre-docker-compose.git meine-website.de && cd meine-website.de
 
-# Umgebungsvariablen konfigurieren
+# Vorlage für Datei mit Umgebumngsvariablen kopieren und nach eigenen Bedürfnissen anpassen
 cp example.env .env
 nano .env # Anpassen: Domain, E-Mail, Passwort, Blog-Titel...
 
@@ -40,4 +42,4 @@ docker compose up -d
 docker compose logs -f ghost-bootstrap
 ```
 
-Nach einer Minute ist das Grundgerüst der Website fertig.
+Nach etwa einer Minute sollte alles laufen.
