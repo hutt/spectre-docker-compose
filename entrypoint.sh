@@ -122,7 +122,6 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
 
 # --- Logik für den normalen Start ---
 else
-    echo "==> Normaler Start von Ghost..."
+    echo "==> Übergebe Kontrolle an den originalen Ghost Entrypoint..."
+    exec /usr/local/bin/docker-entrypoint.sh "$@"
 fi
-
-exec node current/index.js
