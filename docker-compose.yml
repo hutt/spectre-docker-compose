@@ -80,6 +80,7 @@ services:
       hostSettings__postsPublicCache__enabled: "true"
       hostSettings__linkRedirectsPublicCache__enabled: "true"
     volumes:
+      - ./bootstrap:/var/lib/ghost/content/bootstrap
       - ./content:/var/lib/ghost/content
       - ./config.production.json:/var/lib/ghost/config.production.json:ro
     networks:

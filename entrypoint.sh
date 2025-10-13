@@ -24,7 +24,7 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
     GHOST_PID=$!
 
     # 3. Warten, bis der Ghost-Admin erreichbar ist
-    echo "==> Warte, bis Ghost Admin API bereit ist..."
+    echo "Warte, bis Ghost Admin API bereit ist..."
     while ! curl -s -o /dev/null http://localhost:2368/ghost/; do
         echo -n "."
         sleep 1
