@@ -40,4 +40,4 @@ docker compose up -d
 docker compose logs -f ghost-bootstrap
 ```
 
-Nach ca. 2-3 Minuten ist das Grundgerüst der Website fertig.
+Nach einer Minute ist das Grundgerüst der Website fertig.

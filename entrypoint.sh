@@ -11,6 +11,38 @@ if [ "$(id -u)" = '0' ]; then
 fi
 
 # ==============================================================================
+# ==                    GHOST JWT TOKEN GENERATION                           ==
+# ==============================================================================
+generate_ghost_jwt() {
+    local ADMIN_API_KEY="$1"
+    
+    # Split the key into ID and SECRET
+    IFS=':' read -r KEY_ID SECRET <<< "$ADMIN_API_KEY"
+    
+    # Prepare header and payload
+    NOW=$(date +%s)
+    FIVE_MINS=$((NOW + 300))
+    
+    HEADER="{\"alg\":\"HS256\",\"typ\":\"JWT\",\"kid\":\"$KEY_ID\"}"
+    PAYLOAD="{\"iat\":$NOW,\"exp\":$FIVE_MINS,\"aud\":\"/admin/\"}"
+    
+    # Helper function for base64 URL encoding
+    base64_url_encode() {
+        openssl enc -base64 -A | tr '+/' '-_' | tr -d '='
+    }
+    
+    # Encode header and payload
+    HEADER_B64=$(echo -n "$HEADER" | base64_url_encode)
+    PAYLOAD_B64=$(echo -n "$PAYLOAD" | base64_url_encode)
+    
+    # Create signature using the hex-decoded secret
+    SIGNATURE=$(echo -n "${HEADER_B64}.${PAYLOAD_B64}" | openssl dgst -binary -sha256 -mac HMAC -macopt hexkey:$SECRET | base64_url_encode)
+    
+    # Output the complete JWT token
+    echo "${HEADER_B64}.${PAYLOAD_B64}.${SIGNATURE}"
+}
+
+# ==============================================================================
 # ==                                BOOTSTRAP                                 ==
 # ==============================================================================
 BOOTSTRAP_TOKEN_FILE="/var/lib/ghost/content/bootstrap/staff_access_token"
@@ -31,7 +63,7 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
             tar -cC "$(dirname "$src")" "$(basename "$src")" | tar -xC "$(dirname "$target")"
         fi
     done
-    
+
     echo "==> [INIT] Kopiere vorbereitete Datenbank und Routen..."
     DB_PATH="/var/lib/ghost/content/data/ghost.db"
     cp /var/lib/ghost/content/bootstrap/ghost.db "$DB_PATH"
@@ -60,24 +92,25 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
     fi
     echo "==> Ghost Admin API ist bereit."
 
-    # API-Aufrufe für Theme und Blog-Titel
-    STAFF_ACCESS_TOKEN=$(cat $BOOTSTRAP_TOKEN_FILE)
+    STAFF_ACCESS_TOKEN=$(tr -d '[:space:]' < "$BOOTSTRAP_TOKEN_FILE")
+    JWT_TOKEN=$(generate_ghost_jwt "$STAFF_ACCESS_TOKEN")
+
     API_URL="http://localhost:2368/ghost/api/admin"
 
-    echo "==> [API] Installiere und aktiviere Spectre-Theme..."
+    echo "==> [API] Installiere und aktiviere Spectre..."
     curl -s -L -o /tmp/spectre.zip "${SPECTRE_ZIP_URL}"
-    curl -s -X POST "${API_URL}/themes/upload/" -H "Authorization: Ghost ${STAFF_ACCESS_TOKEN}" -F "file=@/tmp/spectre.zip" > /dev/null
-    curl -s -X PUT "${API_URL}/themes/spectre/activate/" -H "Authorization: Ghost ${STAFF_ACCESS_TOKEN}" > /dev/null
+    curl -s -X POST "${API_URL}/themes/upload/" -H "Authorization: Ghost ${JWT_TOKEN}" -H "Accept-Version: v6.0" -F "file=@/tmp/spectre.zip" > /dev/null
+    curl -s -X PUT "${API_URL}/themes/spectre/activate/" -H "Authorization: Ghost ${JWT_TOKEN}" -H "Accept-Version: v6.0" > /dev/null
 
     echo "==> [API] Setze Blog-Titel..."
     SETTINGS_PAYLOAD=$(printf '{"settings":[{"key":"title","value":"%s"}]}' "$GHOST_SETUP_BLOG_TITLE")
-    curl -s -X PUT "${API_URL}/settings/" -H "Authorization: Ghost ${STAFF_ACCESS_TOKEN}" -H "Content-Type: application/json" -d "$SETTINGS_PAYLOAD" > /dev/null
+    curl -s -X PUT "${API_URL}/settings/" -H "Authorization: Ghost ${JWT_TOKEN}" -H "Accept-Version: v6.0" -H "Content-Type: application/json" -d "$SETTINGS_PAYLOAD" > /dev/null
 
     # === SCHRITT 3: Admin-User über SQLite aktualisieren ===
     echo "==> [INIT] Aktualisiere Admin-Benutzer..."
     
     echo "==> [INIT] Hashe das neue Passwort..."
-    NEW_PASSWORD_HASH=$(npx bcryptjs-cli '$GHOST_SETUP_PASSWORD' 10)
+    NEW_PASSWORD_HASH=$(npx bcryptjs-cli "$GHOST_SETUP_PASSWORD" 10)
     
     echo "==> [INIT] Führe SQL-Update aus..."
     sqlite3 "$DB_PATH" "UPDATE users SET name='$GHOST_SETUP_NAME', email='$GHOST_SETUP_EMAIL', password='$NEW_PASSWORD_HASH' WHERE id='1';"
@@ -85,7 +118,7 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
     # === SCHRITT 4: AUFRÄUMEN ===
     rm "$BOOTSTRAP_TOKEN_FILE"
     rm -f /tmp/spectre.zip
-    
+
     echo; echo "==> Beende temporären Ghost-Prozess..."
     kill $GHOST_PID
     wait $GHOST_PID
@@ -96,7 +129,7 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
 fi
 
 # ==============================================================================
-# ==                           FINALE AUSFÜHRUNG                            ==
+# ==                      AN HAUPTPROZESS ÜBERGEBEN                           ==
 # ==============================================================================
 echo "==> Übergebe Kontrolle an den Ghost-Hauptprozess..."
 exec node current/index.js "$@"

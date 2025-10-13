@@ -20,9 +20,10 @@ services:
       --stop-writes-on-bgsave-error no
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 1s
-      retries: 6
+      retries: 5
+      start_period: 15s
     networks:
       - default
 
