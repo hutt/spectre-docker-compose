@@ -1,9 +1,10 @@
 #!/bin/bash
-# Stellt sicher, dass das Skript bei einem Fehler sofort abbricht
+
 set -e
 
-# Pfad zur Bootstrap-Datei, die den "First-Start-Modus" auslöst
+BOOTSTRAP_SOURCE_DIR="/var/lib/ghost/bootstrap_files"
 BOOTSTRAP_TOKEN_FILE="/var/lib/ghost/content/bootstrap/staff_access_token"
+CONTENT_DIR="/var/lib/ghost/content"
 
 # --- Logik für den ersten Start ---
 if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
@@ -13,8 +14,15 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
 
     # 1. Vorbereitungen: Kopieren der Datenbank und Routen
     echo "==> Kopiere Datenbank und Routen-Datei..."
-    cp /var/lib/ghost/content/bootstrap/ghost.db /var/lib/ghost/content/data/ghost.db
-    cp /var/lib/ghost/content/bootstrap/routes.yaml /var/lib/ghost/content/settings/routes.yaml
+    mkdir -p ${CONTENT_DIR}/data
+    mkdir -p ${CONTENT_DIR}/settings
+
+    cp ${BOOTSTRAP_SOURCE_DIR}/ghost.db ${CONTENT_DIR}/data/ghost.db
+    cp ${BOOTSTRAP_SOURCE_DIR}/routes.yaml ${CONTENT_DIR}/settings/routes.yaml
+
+    echo "==> Korrigiere Dateiberechtigungen..."
+    chown -R node:node ${CONTENT_DIR}/data
+    chown -R node:node ${CONTENT_DIR}/settings
 
     # 2. Ghost im Hintergrund starten, um Migrationen auszuführen
     echo "==> Starte Ghost temporär für Datenbank-Migrationen..."
@@ -100,7 +108,7 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
 
     # 5. Aufräumen
     echo "==> Räume auf..."
-    rm "$BOOTSTRAP_TOKEN_FILE"
+    rm -rf "$BOOTSTRAP_SOURCE_DIR"
     rm /tmp/spectre.zip
 
     # Temporären Ghost-Prozess beenden
@@ -117,6 +125,4 @@ else
     echo "==> Normaler Start von Ghost..."
 fi
 
-# In jedem Fall: Ghost als Hauptprozess des Containers starten
-# 'exec' sorgt dafür, dass Ghost PID 1 wird, was für Docker Best Practice ist
 exec node current/index.js
