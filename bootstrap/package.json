@@ -1,9 +1,0 @@
-{
-  "name": "ghost-bootstrap",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "jsonwebtoken": "^9.0.2"
-  }
-}
-

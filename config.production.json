@@ -1,5 +1,5 @@
 {
-  "url": "https://DOMAIN_WIRD_UEBER_ENV_GESETZT",
+  "url": "https://127.0.0.1",
   "server": {
     "host": "::",
     "port": 2368
