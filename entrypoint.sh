@@ -99,12 +99,12 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
 
     echo "==> [API] Installiere und aktiviere Spectre..."
     curl -v -L -s -L -o /tmp/spectre.zip "${SPECTRE_ZIP_URL}"
-    curl -v -L -s -X POST "${API_URL}/themes/upload/" -H "Authorization: Ghost ${JWT_TOKEN}" -H "Accept-Version: v${GHOST_API_VERSION_ACCEPT}" -F "file=@/tmp/spectre.zip" > /dev/null
-    curl -v -L -s -X PUT "${API_URL}/themes/spectre/activate/" -H "Authorization: Ghost ${JWT_TOKEN}" -H "Accept-Version: v${GHOST_API_VERSION_ACCEPT}" > /dev/null
+    curl -v -L -s -X POST "${API_URL}/themes/upload/" -H "Authorization: Ghost ${JWT_TOKEN}" -H "Accept-Version: ${GHOST_API_VERSION_ACCEPT}" -F "file=@/tmp/spectre.zip" > /dev/null
+    curl -v -L -s -X PUT "${API_URL}/themes/spectre/activate/" -H "Authorization: Ghost ${JWT_TOKEN}" -H "Accept-Version: ${GHOST_API_VERSION_ACCEPT}" > /dev/null
 
     echo "==> [API] Setze Blog-Titel..."
     SETTINGS_PAYLOAD=$(printf '{"settings":[{"key":"title","value":"%s"}]}' "$GHOST_SETUP_BLOG_TITLE")
-    curl -v -L -s -X PUT "${API_URL}/settings/" -H "Authorization: Ghost ${JWT_TOKEN}" -H "Accept-Version: v${GHOST_API_VERSION_ACCEPT}" -H "Content-Type: application/json" -d "$SETTINGS_PAYLOAD" > /dev/null
+    curl -v -L -s -X PUT "${API_URL}/settings/" -H "Authorization: Ghost ${JWT_TOKEN}" -H "Accept-Version: ${GHOST_API_VERSION_ACCEPT}" -H "Content-Type: application/json" -d "$SETTINGS_PAYLOAD" > /dev/null
 
     # === SCHRITT 3: Admin-User über SQLite aktualisieren ===
     echo "==> [INIT] Aktualisiere Admin-Benutzer..."
