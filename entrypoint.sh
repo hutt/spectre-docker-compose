@@ -76,7 +76,7 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
     GHOST_PID=$!
     
     # Robuste Warteschleife...
-    API_HEALTH_CHECK_URL="http://localhost:2368/ghost/api/admin/site/"
+    API_HEALTH_CHECK_URL="${url}/ghost/api/admin/site/"
     echo "==> Warte, bis die Ghost Admin API bereit ist..."
     n=0
     until [ "$n" -ge 45 ] || curl -s --head --fail "$API_HEALTH_CHECK_URL" > /dev/null; do
@@ -95,24 +95,21 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
     STAFF_ACCESS_TOKEN=$(tr -d '[:space:]' < "$BOOTSTRAP_TOKEN_FILE")
     JWT_TOKEN=$(generate_ghost_jwt "$STAFF_ACCESS_TOKEN")
 
-    API_URL="https://${DOMAIN}/ghost/api/admin"
+    API_URL="${url}/ghost/api/admin"
 
     echo "==> [API] Installiere und aktiviere Spectre..."
     curl -s -L -o /tmp/spectre.zip "${SPECTRE_ZIP_URL}"
     
-    # === KORREKTUR: X-Forwarded-* Header hinzufügen, um Redirects zu vermeiden ===
     curl -s -L -X POST "${API_URL}/themes/upload/" \
         -H "Authorization: Ghost ${JWT_TOKEN}" \
         -H "Accept-Version: ${GHOST_API_VERSION_ACCEPT}" \
-        -H "X-Forwarded-Proto: https" \
-        -H "X-Forwarded-Host: ${DOMAIN}" \
+        -H "X-Forwarded-Host: ${HOSTNAME}" \
         -F "file=@/tmp/spectre.zip" > /dev/null
     
     curl -s -L -X PUT "${API_URL}/themes/spectre/activate/" \
         -H "Authorization: Ghost ${JWT_TOKEN}" \
         -H "Accept-Version: ${GHOST_API_VERSION_ACCEPT}" \
-        -H "X-Forwarded-Proto: https" \
-        -H "X-Forwarded-Host: ${DOMAIN}" > /dev/null
+        -H "X-Forwarded-Host: ${HOSTNAME}" > /dev/null
 
     echo "==> [API] Setze Blog-Titel..."
     SETTINGS_PAYLOAD=$(printf '{"settings":[{"key":"title","value":"%s"}]}' "$GHOST_SETUP_BLOG_TITLE")
@@ -120,8 +117,7 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
         -H "Authorization: Ghost ${JWT_TOKEN}" \
         -H "Accept-Version: ${GHOST_API_VERSION_ACCEPT}" \
         -H "Content-Type: application/json" \
-        -H "X-Forwarded-Proto: https" \
-        -H "X-Forwarded-Host: ${DOMAIN}" \
+        -H "X-Forwarded-Host: ${HOSTNAME}" \
         -d "$SETTINGS_PAYLOAD" > /dev/null
 
     # === SCHRITT 3: Admin-User über SQLite aktualisieren ===
