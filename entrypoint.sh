@@ -63,16 +63,9 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
     fi
     echo "==> Ghost Admin API ist bereit."
 
-    # Führe die restlichen Init-Skripte aus (ohne 10-bootstrap-files.sh)
-    # HINWEIS: Wir haben die Logik von 10-bootstrap-files.sh bereits ausgeführt.
+    # Führe die einzelnen Init-Skripte aus
     if [ -d "/docker-init.d" ]; then
         for f in /docker-init.d/*; do
-            # Die 10-bootstrap-files.sh auslassen
-            if [[ "$f" == *"10-bootstrap-files.sh" ]]; then
-                echo "==> Überspringe bereits ausgeführtes Skript: $f"
-                continue
-            fi
-            
             case "$f" in
                 *.sh)  echo; echo "==> Führe Init-Skript aus: $f"; . "$f" ;;
                 *)     echo "==> Ignoriere $f" ;;
