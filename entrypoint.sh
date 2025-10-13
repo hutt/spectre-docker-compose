@@ -126,17 +126,23 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
 
     # === SCHRITT 3: Admin-User über SQLite aktualisieren ===
     echo "==> [INIT] Aktualisiere Admin-Benutzer..."
+
+    # Helfer zum einfachen Escapen von SQL
+    sql_escape() { printf "%s" "$1" | sed "s/'/''/g"; }
+    NAME_ESC=$(sql_escape "$GHOST_SETUP_NAME")
+    EMAIL_ESC=$(sql_escape "$GHOST_SETUP_EMAIL")
+    PASS_ESC=$(sql_escape "$NEW_PASSWORD_HASH")
     
     echo "==> [INIT] Hashe das neue Passwort..."
     NEW_PASSWORD_HASH=$(npx bcryptjs-cli "$GHOST_SETUP_PASSWORD" 10)
 
-    # Ghost beenden
+    # Ghost ordentlich beenden
     echo "==> Beende temporären Ghost-Prozess..."
     kill $GHOST_PID
     wait $GHOST_PID
     
     echo "==> [INIT] Führe SQL-Update aus..."
-    sqlite3 "$DB_PATH" "UPDATE users SET name='$GHOST_SETUP_NAME', email='$GHOST_SETUP_EMAIL', password='$NEW_PASSWORD_HASH' WHERE id='1';"
+    sqlite3 "$DB_PATH" "UPDATE users SET name='${NAME_ESC}', email='${EMAIL_ESC}', password='${PASS_ESC}' WHERE slug='superuser';"
 
     # === SCHRITT 4: AUFRÄUMEN ===
     rm "$BOOTSTRAP_TOKEN_FILE"
