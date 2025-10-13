@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   redis:
     container_name: ${CONTAINER_NAME_PREFIX}-redis
@@ -33,6 +31,7 @@ services:
     container_name: ${CONTAINER_NAME_PREFIX}-ghost
     image: ghost:latest
     build: .
+    restart: unless-stopped
     depends_on:
       redis:
         condition: service_healthy
@@ -40,12 +39,7 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      url: http://${DOMAIN}:2368
-      server__host: "0.0.0.0"
-      server__port: "2368"
-      # Datenbank
-      database__client: sqlite3
-      database__connection__filename: /var/lib/ghost/content/data/ghost.db
+      url: http://${HOSTNAME}
       # Mail
       mail__transport: ${GHOST_MAIL_TRANSPORT}
       mail__from: ${GHOST_MAIL_FROM}
@@ -54,17 +48,6 @@ services:
       mail__options__port: ${GHOST_MAIL_PORT}
       mail__options__auth__user: ${GHOST_MAIL_USER}
       mail__options__auth__pass: ${GHOST_MAIL_PASS}
-      # HTTP-Caching (Ghost-intern)
-      caching__frontend__maxAge: ${GHOST_CACHE_FRONTEND_MAXAGE}
-      caching__contentAPI__maxAge: ${GHOST_CACHE_CONTENTAPI_MAXAGE}
-      caching__robotstxt__maxAge: ${GHOST_CACHE_ROBOTSTXT_MAXAGE}
-      caching__sitemap__maxAge: ${GHOST_CACHE_SITEMAP_MAXAGE}
-      caching__sitemapXSL__maxAge: ${GHOST_CACHE_SITEMAPXSL_MAXAGE}
-      caching__wellKnown__maxAge: ${GHOST_CACHE_WELLKNOWN_MAXAGE}
-      caching__cors__maxAge: ${GHOST_CACHE_CORS_MAXAGE}
-      caching__publicAssets__maxAge: ${GHOST_CACHE_PUBLICASSETS_MAXAGE}
-      caching__301__maxAge: ${GHOST_CACHE_301_MAXAGE}
-      caching__customRedirects__maxAge: ${GHOST_CACHE_CUSTOMREDIRECTS_MAXAGE}
       # Redis-Cache
       cache__type: ${GHOST_CACHE_TYPE}
       cache__redis__host: ${GHOST_CACHE_REDIS_HOST}
@@ -86,8 +69,6 @@ services:
       - ./content:/var/lib/ghost/content
       - ./bootstrap:/var/lib/ghost/content/bootstrap
       - ./config.production.json:/var/lib/ghost/config.production.json:ro
-    ports:
-      - "2368:2368"
     networks:
       - default
     healthcheck:
@@ -97,29 +78,28 @@ services:
       retries: 3
       start_period: 90s
 
-  proxy:
-    container_name: ${CONTAINER_NAME_PREFIX}-proxy
+  nginx:
+    container_name: ${CONTAINER_NAME_PREFIX}-nginx
     image: nginx:alpine
+    restart: unless-stopped
     depends_on:
       ghost:
-        condition: service_started
-    restart: unless-stopped
+        condition: service_healthy
     ports:
-      - 8080:80
+      - "80:80"
     volumes:
-      - ./nginx-proxy.conf:/etc/nginx/nginx.conf:ro
-      - proxy-cache:/var/cache/nginx
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - nginx-cache:/var/cache/nginx
     networks:
       - default
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail http://localhost/proxy/npm/@tryghost/sodo-search@latest/umd/sodo-search.min.js || exit 1"]
+      test: ["CMD", "nginx", "-t"]
       interval: 60s
       retries: 5
       start_period: 20s
-      timeout: 10s
 
 volumes:
-  proxy-cache:
+  nginx-cache:
 
 networks:
   default:

@@ -38,12 +38,7 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      url: https://${DOMAIN}
-      server__host: "::"
-      server__port: "2368"
-      # Datenbank
-      database__client: sqlite3
-      database__connection__filename: /var/lib/ghost/content/data/ghost.db
+      url: https://${HOSTNAME}
       # Mail
       mail__transport: ${GHOST_MAIL_TRANSPORT}
       mail__from: ${GHOST_MAIL_FROM}
@@ -52,17 +47,6 @@ services:
       mail__options__port: ${GHOST_MAIL_PORT}
       mail__options__auth__user: ${GHOST_MAIL_USER}
       mail__options__auth__pass: ${GHOST_MAIL_PASS}
-      # HTTP-Caching (Ghost-intern)
-      caching__frontend__maxAge: ${GHOST_CACHE_FRONTEND_MAXAGE}
-      caching__contentAPI__maxAge: ${GHOST_CACHE_CONTENTAPI_MAXAGE}
-      caching__robotstxt__maxAge: ${GHOST_CACHE_ROBOTSTXT_MAXAGE}
-      caching__sitemap__maxAge: ${GHOST_CACHE_SITEMAP_MAXAGE}
-      caching__sitemapXSL__maxAge: ${GHOST_CACHE_SITEMAPXSL_MAXAGE}
-      caching__wellKnown__maxAge: ${GHOST_CACHE_WELLKNOWN_MAXAGE}
-      caching__cors__maxAge: ${GHOST_CACHE_CORS_MAXAGE}
-      caching__publicAssets__maxAge: ${GHOST_CACHE_PUBLICASSETS_MAXAGE}
-      caching__301__maxAge: ${GHOST_CACHE_301_MAXAGE}
-      caching__customRedirects__maxAge: ${GHOST_CACHE_CUSTOMREDIRECTS_MAXAGE}
       # Redis-Cache
       cache__type: ${GHOST_CACHE_TYPE}
       cache__redis__host: ${GHOST_CACHE_REDIS_HOST}
@@ -96,7 +80,7 @@ services:
     labels:
       - "traefik.enable=true"
       # HTTP => HTTPS redirect
-      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`)"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.rule=Host(`${HOSTNAME}`) && !PathPrefix(`/proxy/`)"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.entrypoints=http"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.service=${CONTAINER_NAME_PREFIX}-ghost"
       - "traefik.http.middlewares.${CONTAINER_NAME_PREFIX}-redirect-to-https.redirectscheme.scheme=https"
@@ -105,7 +89,7 @@ services:
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.middlewares=${CONTAINER_NAME_PREFIX}-redirect-to-https"
 
       # HTTPS Ghost
-      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`)"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.rule=Host(`${HOSTNAME}`) && !PathPrefix(`/proxy/`)"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.entrypoints=https"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.service=${CONTAINER_NAME_PREFIX}-ghost"
       - "traefik.http.services.${CONTAINER_NAME_PREFIX}-ghost.loadbalancer.server.port=2368"
@@ -115,7 +99,7 @@ services:
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.priority=90"
 
       # ActivityPub HTTPS passthrough
-      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.rule=Host(`${DOMAIN}`) && (PathPrefix(`/.ghost/activitypub/`)) || (Host(`${DOMAIN}`) && PathPrefix(`/.well-known/webfinger`)) || (Host(`${DOMAIN}`) && PathPrefix(`/.well-known/nodeinfo`))"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.rule=Host(`${HOSTNAME}`) && (PathPrefix(`/.ghost/activitypub/`)) || (Host(`${HOSTNAME}`) && PathPrefix(`/.well-known/webfinger`)) || (Host(`${HOSTNAME}`) && PathPrefix(`/.well-known/nodeinfo`))"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.entrypoints=https"
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.service=${CONTAINER_NAME_PREFIX}-ghost-activitypub"
       - "traefik.http.services.${CONTAINER_NAME_PREFIX}-ghost-activitypub.loadbalancer.server.url=https://ap.ghost.org"
@@ -125,16 +109,16 @@ services:
       - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.priority=100"
       - "traefik.docker.network=proxy"
 
-  proxy:
-    container_name: ${CONTAINER_NAME_PREFIX}-proxy
+  nginx:
+    container_name: ${CONTAINER_NAME_PREFIX}-nginx
     image: nginx:alpine
     depends_on:
       ghost:
         condition: service_started
     restart: unless-stopped
     volumes:
-      - ./nginx-proxy.conf:/etc/nginx/nginx.conf:ro
-      - proxy-cache:/var/cache/nginx
+      - ./nginx-proxy.traefik.conf:/etc/nginx/nginx.conf:ro
+      - nginx-cache:/var/cache/nginx
     networks:
       - default
       - proxy
@@ -143,20 +127,19 @@ services:
       interval: 60s
       retries: 5
       start_period: 20s
-      timeout: 10s
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-proxy.rule=Host(`${DOMAIN}`) && PathPrefix(`/proxy/`)"
-      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-proxy.entrypoints=https"
-      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-proxy.tls=true"
-      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-proxy.tls.certresolver=http"
-      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-proxy.loadbalancer.server.port=80"
-      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-proxy.loadbalancer.passhostheader=true"
-      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-proxy.priority=95"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-nginx.rule=Host(`${HOSTNAME}`) && PathPrefix(`/proxy/`)"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-nginx.entrypoints=https"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-nginx.tls=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-nginx.tls.certresolver=http"
+      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-nginx.loadbalancer.server.port=80"
+      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-nginx.loadbalancer.passhostheader=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-nginx.priority=95"
       - "traefik.docker.network=proxy"
 
 volumes:
-  proxy-cache:
+  nginx-cache:
 
 networks:
   default:
