@@ -129,12 +129,12 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
 
     # Helfer zum einfachen Escapen von SQL
     sql_escape() { printf "%s" "$1" | sed "s/'/''/g"; }
-    NAME_ESC=$(sql_escape "$GHOST_SETUP_NAME")
-    EMAIL_ESC=$(sql_escape "$GHOST_SETUP_EMAIL")
-    PASS_ESC=$(sql_escape "$NEW_PASSWORD_HASH")
     
     echo "==> [INIT] Hashe das neue Passwort..."
     NEW_PASSWORD_HASH=$(npx bcryptjs-cli "$GHOST_SETUP_PASSWORD" 10)
+    NAME_ESC=$(sql_escape "$GHOST_SETUP_NAME")
+    EMAIL_ESC=$(sql_escape "$GHOST_SETUP_EMAIL")
+    PASS_ESC=$(sql_escape "$NEW_PASSWORD_HASH")
 
     # Ghost ordentlich beenden
     echo "==> Beende temporären Ghost-Prozess..."
@@ -142,7 +142,7 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
     wait $GHOST_PID
     
     echo "==> [INIT] Führe SQL-Update aus..."
-    sqlite3 "$DB_PATH" "UPDATE users SET name='${NAME_ESC}', email='${EMAIL_ESC}', password='${PASS_ESC}' WHERE slug='superuser';"
+    sqlite3 "$DB_PATH" "UPDATE users SET name='${NAME_ESC}', email='${EMAIL_ESC}', password='${PASS_ESC}', slug='admin' WHERE slug='superuser';"
 
     # === SCHRITT 4: AUFRÄUMEN ===
     rm "$BOOTSTRAP_TOKEN_FILE"

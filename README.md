@@ -6,13 +6,13 @@ Dieses Repository enthält eine Docker-Compose-Vorlage für eine datenschutzfreu
 > Dieses Deployment eigenet sich nur für selbstgehostete Ghost-Instanzen. Das einfache Theme für fremdgehostete Ghost-Seiten gibt es [hier](https://github.com/hutt/spectre).
 
 ## Features
-✅ **automatische Theme-Installation**: Das [Spectre Theme](https://github.com/hutt/spectre) für Blogs und Websites, die mit der Partei Die Linke zu tun haben, wird automatisch heruntergeladen und aktiviert.  
-✅ **automatische Routen-Installation**: Für gewöhnlich muss man statische Startseiten oder andere für ein Blogging-CMS „außerdewöhnlichere“ Features in Ghost mit einer YAML-Datei konfigurieren. Hier wird die sogenannte `routes.yaml` automatisch [für Spectre konfiguriert](bootstrap/routes.yaml).
-✅ **Datenschutzfreundlich**: Ein lokaler Proxy cached Assets von JSDelivr und YouTube-Embeds ([Hier gibt es mehr Informationen dazu](https://github.com/hutt/spectre/blob/main/README.de.md#datenschutzfreundliche-youtube-video-einbettungen)). 
-✅ **Vorkonfigurierte Inhalte**: 5 Beispiel-Seiten + 2 Beispiel-Posts
-✅ **Redis**: Performance-Optimierung durch vorinstalliertes und -konfiguriertes Datenbank-Caching. 
-✅ **Enthält traefik-Labels**: Diese Docker-Compose enthält Labels zum Deployment mit [traefik](https://traefik.io/). Hier gibt es eine [gute Anleitung für Anfänger](https://goneuland.de/traefik-v3-installation-konfiguration-und-crowdsec-security/).
-✅ **Konfiguration über `.env`-Datei**: Die wichtigsten Einstellungen können über eine Datei mit Umgebungsvariablen gesetzt werden (Vorlage: [example.env](example.env))
+* **automatische Theme-Installation**: Das [Spectre Theme](https://github.com/hutt/spectre) für Blogs und Websites, die mit der Partei Die Linke zu tun haben, wird automatisch heruntergeladen und aktiviert.  
+* **automatische Routen-Installation**: Für gewöhnlich muss man statische Startseiten oder andere für ein Blogging-CMS „außerdewöhnlichere“ Features in Ghost mit einer YAML-Datei konfigurieren. Hier wird die sogenannte `routes.yaml` automatisch [für Spectre konfiguriert](bootstrap/routes.yaml).
+* **Datenschutzfreundlich**: Ein lokaler Proxy cached Assets von JSDelivr und YouTube-Embeds ([Hier gibt es mehr Informationen dazu](https://github.com/hutt/spectre/blob/main/README.de.md#datenschutzfreundliche-youtube-video-einbettungen)). 
+* **Vorkonfigurierte Inhalte**: 5 Beispiel-Seiten + 2 Beispiel-Posts
+* **Redis**: Performance-Optimierung durch vorinstalliertes und -konfiguriertes Datenbank-Caching. 
+* **Enthält traefik-Labels**: Diese Docker-Compose enthält Labels zum Deployment mit [traefik](https://traefik.io/). Hier gibt es eine [gute Anleitung für Anfänger](https://goneuland.de/traefik-v3-installation-konfiguration-und-crowdsec-security/).
+* **Konfiguration über `.env`-Datei**: Die wichtigsten Einstellungen können über eine Datei mit Umgebungsvariablen gesetzt werden (Vorlage: [example.env](example.env))
 
 > [!IMPORTANT]
 > Datenschutzfreundliche YouTube-Embeds funktionieren nur in Kombination mit meinem Theme Spectre. [Mehr Infos…](https://github.com/hutt/spectre/blob/main/README.de.md#datenschutzfreundliche-youtube-video-einbettungen)
