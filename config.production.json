@@ -1,11 +1,51 @@
 {
-  "url": "https://127.0.0.1",
+  "url": "http://127.0.0.1",
   "server": {
     "host": "::",
     "port": 2368
   },
+  "database": {
+    "client": "sqlite3",
+    "connection": {
+      "filename": "/var/lib/ghost/content/data/ghost.db"
+    },
+    "useNullAsDefault": true,
+    "debug": false
+  },
   "logging": {
     "transports": ["file", "stdout"]
+  },
+  "caching": {
+    "contentApi": {
+      "maxAge": 300
+    },
+    "frontend": {
+      "maxAge": 300
+    },
+    "robotstxt": {
+      "maxAge": 3600
+    },
+    "sitemap": {
+      "maxAge": 3600
+    },
+    "sitemapXSL": {
+      "maxAge": 86400
+    },
+    "wellKnown": {
+      "maxAge": 86400
+    },
+    "cors": {
+      "maxAge": 86400
+    },
+    "publicAssets": {
+      "maxAge": 31536000
+    },
+    "301": {
+      "maxAge": 3600
+    },
+    "customRedirects": {
+      "maxAge": 10800
+    }
   },
   "process": "systemd",
   "paths": {

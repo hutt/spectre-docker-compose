@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   redis:
     container_name: ${CONTAINER_NAME_PREFIX}-redis
@@ -32,7 +30,7 @@ services:
   ghost:
     container_name: ${CONTAINER_NAME_PREFIX}-ghost
     image: ghost:latest
-    build: .
+    build: . 
     depends_on:
       redis:
         condition: service_healthy
@@ -40,8 +38,8 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      url: http://${DOMAIN}:2368
-      server__host: "0.0.0.0"
+      url: https://${DOMAIN}
+      server__host: "::"
       server__port: "2368"
       # Datenbank
       database__client: sqlite3
@@ -86,16 +84,46 @@ services:
       - ./content:/var/lib/ghost/content
       - ./bootstrap:/var/lib/ghost/content/bootstrap
       - ./config.production.json:/var/lib/ghost/config.production.json:ro
-    ports:
-      - "2368:2368"
     networks:
       - default
+      - proxy
     healthcheck:
       test: timeout 10s bash -c ':> /dev/tcp/127.0.0.1/2368' || exit 1
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 90s
+    labels:
+      - "traefik.enable=true"
+      # HTTP => HTTPS redirect
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`)"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.entrypoints=http"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.service=${CONTAINER_NAME_PREFIX}-ghost"
+      - "traefik.http.middlewares.${CONTAINER_NAME_PREFIX}-redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.${CONTAINER_NAME_PREFIX}-redirect-to-https.redirectscheme.permanent=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.priority=80"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-insecure.middlewares=${CONTAINER_NAME_PREFIX}-redirect-to-https"
+
+      # HTTPS Ghost
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.rule=Host(`${DOMAIN}`) && !PathPrefix(`/proxy/`)"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.entrypoints=https"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.service=${CONTAINER_NAME_PREFIX}-ghost"
+      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-ghost.loadbalancer.server.port=2368"
+      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-ghost.loadbalancer.passhostheader=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.tls=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.tls.certresolver=http"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost.priority=90"
+
+      # ActivityPub HTTPS passthrough
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.rule=Host(`${DOMAIN}`) && (PathPrefix(`/.ghost/activitypub/`)) || (Host(`${DOMAIN}`) && PathPrefix(`/.well-known/webfinger`)) || (Host(`${DOMAIN}`) && PathPrefix(`/.well-known/nodeinfo`))"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.entrypoints=https"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.service=${CONTAINER_NAME_PREFIX}-ghost-activitypub"
+      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-ghost-activitypub.loadbalancer.server.url=https://ap.ghost.org"
+      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-ghost-activitypub.loadbalancer.passhostheader=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.tls=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.tls.certresolver=http"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-ghost-activitypub.priority=100"
+      - "traefik.docker.network=proxy"
 
   proxy:
     container_name: ${CONTAINER_NAME_PREFIX}-proxy
@@ -104,19 +132,28 @@ services:
       ghost:
         condition: service_started
     restart: unless-stopped
-    ports:
-      - 8080:80
     volumes:
       - ./nginx-proxy.conf:/etc/nginx/nginx.conf:ro
       - proxy-cache:/var/cache/nginx
     networks:
       - default
+      - proxy
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail http://localhost/proxy/npm/@tryghost/sodo-search@latest/umd/sodo-search.min.js || exit 1"]
+      test: curl --fail http://localhost/proxy/npm/@tryghost/sodo-search@latest/umd/sodo-search.min.js || exit 1
       interval: 60s
       retries: 5
       start_period: 20s
       timeout: 10s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-proxy.rule=Host(`${DOMAIN}`) && PathPrefix(`/proxy/`)"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-proxy.entrypoints=https"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-proxy.tls=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-proxy.tls.certresolver=http"
+      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-proxy.loadbalancer.server.port=80"
+      - "traefik.http.services.${CONTAINER_NAME_PREFIX}-proxy.loadbalancer.passhostheader=true"
+      - "traefik.http.routers.${CONTAINER_NAME_PREFIX}-proxy.priority=95"
+      - "traefik.docker.network=proxy"
 
 volumes:
   proxy-cache:
@@ -124,3 +161,5 @@ volumes:
 networks:
   default:
     driver: bridge
+  proxy:
+    external: true

@@ -1,6 +1,6 @@
 # Ghost mit Spectre-Theme, Third-Party-Proxy & Redis-Caching (automatisches Deployment)
 
-Dieses Repository enthält eine Docker-Compose-Vorlage für eine datenschutzfreundliche Ghost-Installation mkit aktiviertem [Spectre-Theme](https://github.com/hutt/spectre). Externe Ressourcen wie JSDelivr-Bibliotheken oder Thumbnails werden über `https://meine-website.de/proxy/…` lokal geproxied und gecached. Ghost nutzt Redis für internes Caching und Traefik für SSL & Routing. 
+Dieses Repository enthält eine Docker-Compose-Vorlage für eine datenschutzfreundliche Ghost-Installation mkit aktiviertem [Spectre-Theme](https://github.com/hutt/spectre). Externe Ressourcen wie JSDelivr-Bibliotheken oder Thumbnails werden über `https://meine-website.de/proxy/…` lokal geproxied und gecached. Ghost nutzt Redis für internes Caching und optional Traefik für SSL & Routing (dafür einfach die `docker-compose.traefik.yaml` nutzen. 
 
 > [!WARNING]
 > Dieses Deployment eigenet sich nur für selbstgehostete Ghost-Instanzen. Das einfache Theme für fremdgehostete Ghost-Seiten gibt es [hier](https://github.com/hutt/spectre).
