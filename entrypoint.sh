@@ -98,19 +98,42 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
     API_URL="https://${DOMAIN}/ghost/api/admin"
 
     echo "==> [API] Installiere und aktiviere Spectre..."
-    curl -v -L -s -L -o /tmp/spectre.zip "${SPECTRE_ZIP_URL}"
-    curl -v -L -s -X POST "${API_URL}/themes/upload/" -H "Authorization: Ghost ${JWT_TOKEN}" -H "Accept-Version: ${GHOST_API_VERSION_ACCEPT}" -F "file=@/tmp/spectre.zip" > /dev/null
-    curl -v -L -s -X PUT "${API_URL}/themes/spectre/activate/" -H "Authorization: Ghost ${JWT_TOKEN}" -H "Accept-Version: ${GHOST_API_VERSION_ACCEPT}" > /dev/null
+    curl -s -L -o /tmp/spectre.zip "${SPECTRE_ZIP_URL}"
+    
+    # === KORREKTUR: X-Forwarded-* Header hinzufügen, um Redirects zu vermeiden ===
+    curl -s -L -X POST "${API_URL}/themes/upload/" \
+        -H "Authorization: Ghost ${JWT_TOKEN}" \
+        -H "Accept-Version: ${GHOST_API_VERSION_ACCEPT}" \
+        -H "X-Forwarded-Proto: https" \
+        -H "X-Forwarded-Host: ${DOMAIN}" \
+        -F "file=@/tmp/spectre.zip" > /dev/null
+    
+    curl -s -L -X PUT "${API_URL}/themes/spectre/activate/" \
+        -H "Authorization: Ghost ${JWT_TOKEN}" \
+        -H "Accept-Version: ${GHOST_API_VERSION_ACCEPT}" \
+        -H "X-Forwarded-Proto: https" \
+        -H "X-Forwarded-Host: ${DOMAIN}" > /dev/null
 
     echo "==> [API] Setze Blog-Titel..."
     SETTINGS_PAYLOAD=$(printf '{"settings":[{"key":"title","value":"%s"}]}' "$GHOST_SETUP_BLOG_TITLE")
-    curl -v -L -s -X PUT "${API_URL}/settings/" -H "Authorization: Ghost ${JWT_TOKEN}" -H "Accept-Version: ${GHOST_API_VERSION_ACCEPT}" -H "Content-Type: application/json" -d "$SETTINGS_PAYLOAD" > /dev/null
+    curl -s -L -X PUT "${API_URL}/settings/" \
+        -H "Authorization: Ghost ${JWT_TOKEN}" \
+        -H "Accept-Version: ${GHOST_API_VERSION_ACCEPT}" \
+        -H "Content-Type: application/json" \
+        -H "X-Forwarded-Proto: https" \
+        -H "X-Forwarded-Host: ${DOMAIN}" \
+        -d "$SETTINGS_PAYLOAD" > /dev/null
 
     # === SCHRITT 3: Admin-User über SQLite aktualisieren ===
     echo "==> [INIT] Aktualisiere Admin-Benutzer..."
     
     echo "==> [INIT] Hashe das neue Passwort..."
     NEW_PASSWORD_HASH=$(npx bcryptjs-cli "$GHOST_SETUP_PASSWORD" 10)
+
+    # Ghost beenden
+    echo "==> Beende temporären Ghost-Prozess..."
+    kill $GHOST_PID
+    wait $GHOST_PID
     
     echo "==> [INIT] Führe SQL-Update aus..."
     sqlite3 "$DB_PATH" "UPDATE users SET name='$GHOST_SETUP_NAME', email='$GHOST_SETUP_EMAIL', password='$NEW_PASSWORD_HASH' WHERE id='1';"
@@ -118,10 +141,6 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
     # === SCHRITT 4: AUFRÄUMEN ===
     rm "$BOOTSTRAP_TOKEN_FILE"
     rm -f /tmp/spectre.zip
-
-    echo; echo "==> Beende temporären Ghost-Prozess..."
-    kill $GHOST_PID
-    wait $GHOST_PID
     
     echo "=================================================="
     echo "==> ERSTEINRICHTUNG ABGESCHLOSSEN."
