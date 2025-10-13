@@ -11,17 +11,16 @@ if [ "$(id -u)" = '0' ]; then
 fi
 
 # ==============================================================================
-# ==                        ERSTEINRICHTUNG (BOOTSTRAP)                       ==
+# ==                                BOOTSTRAP                                 ==
 # ==============================================================================
 BOOTSTRAP_TOKEN_FILE="/var/lib/ghost/content/bootstrap/staff_access_token"
 
-# Führe die Initialisierung nur aus, wenn die Bootstrap-Datei existiert
 if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
     echo "=================================================="
     echo "==> ERSTEINRICHTUNG WIRD DURCHGEFÜHRT..."
     echo "=================================================="
 
-    # === SCHRITT 1: DATEI-SYSTEM VORBEREITEN (VOR GHOST-START!) ===
+    # === SCHRITT 1: DATEISYSTEM VORBEREITEN ===
     echo "==> [INIT] Stelle Standard-Verzeichnisstruktur sicher..."
     baseDir="$GHOST_INSTALL/content.orig"
     for src in "$baseDir"/*/ "$baseDir"/themes/*; do
@@ -34,19 +33,17 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
     done
     
     echo "==> [INIT] Kopiere vorbereitete Datenbank und Routen..."
-    # Dieser Befehl überschreibt die leere DB aus dem vorherigen Schritt
-    cp /var/lib/ghost/content/bootstrap/ghost.db /var/lib/ghost/content/data/ghost.db
+    DB_PATH="/var/lib/ghost/content/data/ghost.db"
+    cp /var/lib/ghost/content/bootstrap/ghost.db "$DB_PATH"
     cp /var/lib/ghost/content/bootstrap/routes.yaml /var/lib/ghost/content/settings/routes.yaml
-    # Berechtigungen sicherstellen
-    chown node:node /var/lib/ghost/content/data/ghost.db
-    chown node:node /var/lib/ghost/content/settings/routes.yaml
+    chown node:node "$DB_PATH" /var/lib/ghost/content/settings/routes.yaml
 
-    # === SCHRITT 2: GHOST TEMPORÄR STARTEN & KONFIGURIEREN ===
+    # === SCHRITT 2: RESTLICHE KONFIGURATION PER API ===
     echo "==> [INIT] Starte Ghost temporär für API-Konfiguration..."
     node current/index.js &
     GHOST_PID=$!
     
-    # Robuste Warteschleife
+    # Robuste Warteschleife...
     API_HEALTH_CHECK_URL="http://localhost:2368/ghost/api/admin/site/"
     echo "==> Warte, bis die Ghost Admin API bereit ist..."
     n=0
@@ -63,17 +60,32 @@ if [ -f "$BOOTSTRAP_TOKEN_FILE" ]; then
     fi
     echo "==> Ghost Admin API ist bereit."
 
-    # Führe die einzelnen Init-Skripte aus
-    if [ -d "/docker-init.d" ]; then
-        for f in /docker-init.d/*; do
-            case "$f" in
-                *.sh)  echo; echo "==> Führe Init-Skript aus: $f"; . "$f" ;;
-                *)     echo "==> Ignoriere $f" ;;
-            esac
-        done
-    fi
+    # API-Aufrufe für Theme und Blog-Titel
+    STAFF_ACCESS_TOKEN=$(cat $BOOTSTRAP_TOKEN_FILE)
+    API_URL="http://localhost:2368/ghost/api/admin"
 
-    # Aufräumen
+    echo "==> [API] Installiere und aktiviere Spectre-Theme..."
+    curl -s -L -o /tmp/spectre.zip "${SPECTRE_ZIP_URL}"
+    curl -s -X POST "${API_URL}/themes/upload/" -H "Authorization: Ghost ${STAFF_ACCESS_TOKEN}" -F "file=@/tmp/spectre.zip" > /dev/null
+    curl -s -X PUT "${API_URL}/themes/spectre/activate/" -H "Authorization: Ghost ${STAFF_ACCESS_TOKEN}" > /dev/null
+
+    echo "==> [API] Setze Blog-Titel..."
+    SETTINGS_PAYLOAD=$(printf '{"settings":[{"key":"title","value":"%s"}]}' "$GHOST_SETUP_BLOG_TITLE")
+    curl -s -X PUT "${API_URL}/settings/" -H "Authorization: Ghost ${STAFF_ACCESS_TOKEN}" -H "Content-Type: application/json" -d "$SETTINGS_PAYLOAD" > /dev/null
+
+    # === SCHRITT 3: Admin-User über SQLite aktualisieren ===
+    echo "==> [INIT] Aktualisiere Admin-Benutzer..."
+    
+    echo "==> [INIT] Hashe das neue Passwort..."
+    NEW_PASSWORD_HASH=$(npx bcryptjs-cli '$GHOST_SETUP_PASSWORD' 10)
+    
+    echo "==> [INIT] Führe SQL-Update aus..."
+    sqlite3 "$DB_PATH" "UPDATE users SET name='$GHOST_SETUP_NAME', email='$GHOST_SETUP_EMAIL', password='$NEW_PASSWORD_HASH' WHERE id='1';"
+
+    # === SCHRITT 4: AUFRÄUMEN ===
+    rm "$BOOTSTRAP_TOKEN_FILE"
+    rm -f /tmp/spectre.zip
+    
     echo; echo "==> Beende temporären Ghost-Prozess..."
     kill $GHOST_PID
     wait $GHOST_PID
