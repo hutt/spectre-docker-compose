@@ -1,4 +1,4 @@
-# Ghost mit Third-Party-Proxy & Redis-Caching
+# Ghost mit Spectre-Theme, Third-Party-Proxy & Redis-Caching (automatisches Deployment)
 
 Dieses Repository enthält eine Docker-Compose-Vorlage für eine datenschutzfreundliche Ghost-Installation mkit aktiviertem [Spectre-Theme](https://github.com/hutt/spectre). Externe Ressourcen wie JSDelivr-Bibliotheken oder Thumbnails werden über `https://meine-website.de/proxy/…` lokal geproxied und gecached. Ghost nutzt Redis für internes Caching und Traefik für SSL & Routing. 
 
@@ -22,7 +22,7 @@ Dieses Repository enthält eine Docker-Compose-Vorlage für eine datenschutzfreu
 - Server mit:
   - Docker
   - Docker Compose
-  - Traefik v3 (Bei GoNeuland gibt es eine [sehr gute und ausführliche Installationsanleitung](https://goneuland.de/traefik-v3-installation-konfiguration-und-crowdsec-security/))
+  - Traefik v3 ([optional](docker-compose.traefik.yml); Bei GoNeuland gibt es eine [sehr gute und ausführliche Installationsanleitung](https://goneuland.de/traefik-v3-installation-konfiguration-und-crowdsec-security/))
 - Domain und DNS-Record, der auf den Server zeigt
 
 ## Schnellstart
