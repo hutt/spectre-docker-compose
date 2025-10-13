@@ -7,11 +7,11 @@ Dieses Repository enthält eine Docker-Compose-Vorlage für eine datenschutzfreu
 
 ## Features
 * **automatische Theme-Installation**: Das [Spectre Theme](https://github.com/hutt/spectre) für Blogs und Websites, die mit der Partei Die Linke zu tun haben, wird automatisch heruntergeladen und aktiviert.  
-* **automatische Routen-Installation**: Für gewöhnlich muss man statische Startseiten oder andere für ein Blogging-CMS „außerdewöhnlichere“ Features in Ghost mit einer YAML-Datei konfigurieren. Hier wird die sogenannte `routes.yaml` automatisch [für Spectre konfiguriert](bootstrap/routes.yaml).
+* **automatische Routen-Konfiguration**: Für gewöhnlich muss man statische Startseiten oder andere für ein Blogging-CMS „außerdewöhnlichere“ Features in Ghost mit einer YAML-Datei konfigurieren. Hier wird die sogenannte `routes.yaml` automatisch [für Spectre konfiguriert](bootstrap/routes.yaml).
 * **Datenschutzfreundlich**: Ein lokaler Proxy cached Assets von JSDelivr und YouTube-Embeds ([Hier gibt es mehr Informationen dazu](https://github.com/hutt/spectre/blob/main/README.de.md#datenschutzfreundliche-youtube-video-einbettungen)). 
 * **Vorkonfigurierte Inhalte**: 5 Beispiel-Seiten + 2 Beispiel-Posts
 * **Redis**: Performance-Optimierung durch vorinstalliertes und -konfiguriertes Datenbank-Caching. 
-* **Enthält traefik-Labels**: Diese Docker-Compose enthält Labels zum Deployment mit [traefik](https://traefik.io/). Hier gibt es eine [gute Anleitung für Anfänger](https://goneuland.de/traefik-v3-installation-konfiguration-und-crowdsec-security/).
+* **traefik-kompatibel**: Es gibt optional eine Compose File mit Labels für Deployments mit [traefik](https://traefik.io/). Hier gibt es eine [gute Anleitung für Anfänger](https://goneuland.de/traefik-v3-installation-konfiguration-und-crowdsec-security/).
 * **Konfiguration über `.env`-Datei**: Die wichtigsten Einstellungen können über eine Datei mit Umgebungsvariablen gesetzt werden (Vorlage: [example.env](example.env))
 
 > [!IMPORTANT]
@@ -27,6 +27,10 @@ Dieses Repository enthält eine Docker-Compose-Vorlage für eine datenschutzfreu
 
 ## Schnellstart
 
+### nginx
+
+Diese Version proxied den gesamten Netzwerkverkehr durch den nginx-Container. Third-Party-Requests an JSDelivr und für [datenschutzfreundliche YouTube-Embeds](https://github.com/hutt/spectre/blob/main/README.de.md#datenschutzfreundliche-youtube-video-einbettungen) werden ebenfalls durch nginx geleitet.
+
 ```bash
 # Repository klonen & ins Arbeitsverzeichnis wechseln (Arbeitsverzeichnis ist hier "meine-website.de")
 git clone https://github.com/hutt/spectre-docker-compose.git meine-website.de && cd meine-website.de
@@ -39,7 +43,26 @@ nano .env # Anpassen: Domain, E-Mail, Passwort, Blog-Titel...
 docker compose up -d
 
 # Logs verfolgen
-docker compose logs -f ghost-bootstrap
+docker compose logs -f
+```
+
+### Mit traefik
+
+Diese Version nutzt traefik als Reverse Proxy (externes Netzwerk `proxy`) und nginx als Caching-Proxy für Third-Party-Requests an JSDelivr und für [datenschutzfreundliche YouTube-Embeds](https://github.com/hutt/spectre/blob/main/README.de.md#datenschutzfreundliche-youtube-video-einbettungen). Grundlage ist [diese Anleitung](https://goneuland.de/traefik-v3-installation-konfiguration-und-crowdsec-security/).
+
+```bash
+# Repository klonen & ins Arbeitsverzeichnis wechseln (Arbeitsverzeichnis ist hier "meine-website.de")
+git clone https://github.com/hutt/spectre-docker-compose.git meine-website.de && cd meine-website.de
+
+# Vorlage für Datei mit Umgebumngsvariablen kopieren und nach eigenen Bedürfnissen anpassen
+cp example.env .env
+nano .env # Anpassen: Domain, E-Mail, Passwort, Blog-Titel...
+
+# Deps starten und Container hochfahren:
+docker compose -f docker-compose.traefik.yml up -d
+
+# Logs verfolgen
+docker compose -f docker-compose.traefik.yml logs -f
 ```
 
 Nach etwa einer Minute sollte alles laufen.
