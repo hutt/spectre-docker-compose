@@ -81,6 +81,7 @@ services:
       hostSettings__linkRedirectsPublicCache__enabled: "true"
     volumes:
       - ./content:/var/lib/ghost/content
+      - ./bootstrap:/var/lib/ghost/content/bootstrap
       - ./config.production.json:/var/lib/ghost/config.production.json:ro
     networks:
       - default

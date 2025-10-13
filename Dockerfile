@@ -4,8 +4,7 @@ USER root
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl jq && \
     rm -rf /var/lib/apt/lists/*
-COPY ./bootstrap /var/lib/ghost/bootstrap_files
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
-USER node
 ENTRYPOINT ["entrypoint.sh"]
+# CMD ["node", "current/index.js"]
