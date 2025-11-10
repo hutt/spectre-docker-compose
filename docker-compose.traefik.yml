@@ -61,9 +61,6 @@ services:
       cache__redis__storeConfig__lazyConnect: ${GHOST_CACHE_REDIS_LAZYCONNECT}
       cache__redis__storeConfig__enableOfflineQueue: ${GHOST_CACHE_REDIS_ENABLEOFFLINEQUEUE}
       cache__redis__storeConfig__maxRetriesPerRequest: ${GHOST_CACHE_REDIS_MAXRETRIES}
-      # HostSettings
-      hostSettings__postsPublicCache__enabled: "true"
-      hostSettings__linkRedirectsPublicCache__enabled: "true"
     volumes:
       - ./content:/var/lib/ghost/content
       - ./bootstrap:/var/lib/ghost/content/bootstrap
