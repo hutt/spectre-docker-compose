@@ -40,7 +40,7 @@ cp example.env .env
 nano .env # Anpassen: Domain, E-Mail, Passwort, Blog-Titel...
 
 # Deps starten und Container hochfahren:
-docker compose up -d
+docker compose up -d --build
 
 # Logs verfolgen
 docker compose logs -f
@@ -59,7 +59,7 @@ cp example.env .env
 nano .env # Anpassen: Domain, E-Mail, Passwort, Blog-Titel...
 
 # Deps starten und Container hochfahren:
-docker compose -f docker-compose.traefik.yml up -d
+docker compose -f docker-compose.traefik.yml up -d --build
 
 # Logs verfolgen
 docker compose -f docker-compose.traefik.yml logs -f
