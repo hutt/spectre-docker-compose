@@ -35,9 +35,9 @@ Diese Version proxied den gesamten Netzwerkverkehr durch den nginx-Container. Th
 # Repository klonen & ins Arbeitsverzeichnis wechseln (Arbeitsverzeichnis ist hier "meine-website.de")
 git clone https://github.com/hutt/spectre-docker-compose.git meine-website.de && cd meine-website.de
 
-# Vorlage für Datei mit Umgebumngsvariablen kopieren und nach eigenen Bedürfnissen anpassen
+# Vorlage für Datei mit Umgebungsvariablen kopieren und nach eigenen Bedürfnissen anpassen
 cp example.env .env
-nano .env # Anpassen: Domain, E-Mail, Passwort, Blog-Titel...
+nano .env # Anpassen: Domain, E-Mail, Mailserver, Passwort, Blog-Titel...
 
 # Deps starten und Container hochfahren:
 docker compose up -d --build
@@ -54,9 +54,9 @@ Diese Version nutzt traefik als Reverse Proxy (externes Netzwerk `proxy`) und ng
 # Repository klonen & ins Arbeitsverzeichnis wechseln (Arbeitsverzeichnis ist hier "meine-website.de")
 git clone https://github.com/hutt/spectre-docker-compose.git meine-website.de && cd meine-website.de
 
-# Vorlage für Datei mit Umgebumngsvariablen kopieren und nach eigenen Bedürfnissen anpassen
+# Vorlage für Datei mit Umgebungsvariablen kopieren und nach eigenen Bedürfnissen anpassen
 cp example.env .env
-nano .env # Anpassen: Domain, E-Mail, Passwort, Blog-Titel...
+nano .env # Anpassen: Domain, E-Mail, Mailserver, Passwort, Blog-Titel...
 
 # Deps starten und Container hochfahren:
 docker compose -f docker-compose.traefik.yml up -d --build
