@@ -30,6 +30,7 @@ services:
   ghost:
     container_name: ${CONTAINER_NAME_PREFIX}-ghost
     image: ghost:latest
+    restart: unless-stopped
     build: . 
     depends_on:
       redis:
